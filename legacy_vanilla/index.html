@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Bản đồ vệ tinh lô rừng Việt Nam với CesiumJS và Sentinel-2" />
+    <title>Lâm Kính — Rừng Việt Nam 3D</title>
+    <link rel="preconnect" href="https://tile.openstreetmap.org" />
+    <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.142/Build/Cesium/Widgets/widgets.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="cesiumContainer" aria-label="Bản đồ 3D Việt Nam"></div>
+
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Lâm Kính - trang chủ">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48"><path d="M24 5C14 12 8 21 9 31c1 8 8 13 15 12 9-1 15-8 15-17C39 17 32 10 24 5Z"/><path class="vein" d="M24 36V15m0 13-8-6m8 9 8-7"/></svg>
+          </span>
+          <span><strong>LÂM KÍNH</strong><small>VIETNAM FOREST 3D</small></span>
+        </a>
+        <div class="top-actions">
+          <button class="icon-button" id="exportMap" title="Xuất ảnh bản đồ PNG" aria-label="Xuất ảnh bản đồ PNG">
+            <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v3h14v-3"/></svg>
+          </button>
+          <button class="icon-button" id="resetView" title="Về góc nhìn Việt Nam" aria-label="Về góc nhìn Việt Nam">
+            <svg viewBox="0 0 24 24"><path d="M3 11 12 4l9 7M5 10v10h14V10M9 20v-6h6v6"/></svg>
+          </button>
+          <button class="icon-button" id="togglePanel" title="Ẩn/hiện bảng điều khiển" aria-label="Ẩn hiện bảng điều khiển">
+            <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <aside class="panel" id="controlPanel">
+        <div class="panel-intro">
+          <span class="eyebrow">BẢN ĐỒ TƯƠNG TÁC</span>
+          <h1>Lô rừng 68 ha<br/><em>phủ xanh từng đường biên.</em></h1>
+          <p>Trực quan hóa toàn bộ polygon từ KML bằng ranh giới chính xác và lớp cây 3D procedural.</p>
+        </div>
+
+        <div class="search-box">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg>
+          <input id="regionSearch" type="search" placeholder="Tìm lô rừng trong KML..." autocomplete="off" />
+          <kbd>⌘ K</kbd>
+          <div class="search-results" id="searchResults"></div>
+        </div>
+
+        <div class="draw-tools">
+          <button id="drawPolygon" class="draw-primary"><svg viewBox="0 0 24 24"><path d="m5 6 6-3 8 5-2 10-10 2-4-8Z"/><circle cx="5" cy="6" r="1.5"/><circle cx="19" cy="8" r="1.5"/><circle cx="17" cy="18" r="1.5"/></svg><span>Vẽ vùng phân tích</span></button>
+          <button id="clearDrawn" title="Xóa các vùng đã vẽ" disabled><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m3 0-1 14H7L6 7m4 4v6m4-6v6"/></svg></button>
+        </div>
+        <p class="draw-hint" id="drawHint">Phạm vi tính toán: bên trong đường biên KML.</p>
+
+        <section class="control-section">
+          <div class="section-heading"><span>LỚP DỮ LIỆU</span><button id="toggleAll">Tắt tất cả</button></div>
+          <label class="layer-row">
+            <span class="layer-icon osm"><svg viewBox="0 0 24 24"><path d="m4 6 5-2 6 2 5-2v14l-5 2-6-2-5 2Z"/><path d="M9 4v14m6-12v14"/></svg></span>
+            <span><strong>Nền tham chiếu</strong><small>Ảnh nét để định vị, không đại diện ngày chụp</small></span>
+            <input class="switch" id="referenceToggle" type="checkbox" checked />
+          </label>
+          <label class="layer-row">
+            <span class="layer-icon spectral"><svg viewBox="0 0 24 24"><path d="M4 18 9 6l4 12 3-8 4 8"/><path d="M3 18h18"/></svg></span>
+            <span><strong>Ảnh Sentinel-2</strong><small id="spectralStatus">Đang tìm ảnh ít mây...</small></span>
+            <input class="switch" id="satelliteToggle" type="checkbox" disabled />
+          </label>
+          <p class="map-update-time" id="mapUpdatedAt">Lần kiểm tra dữ liệu: —</p>
+          <p class="map-resolution-note">Nền tham chiếu để zoom; Sentinel-2 10 m/pixel dùng cho ngày chụp và band phổ.</p>
+          <div class="band-picker">
+            <span>TỔ HỢP BAND</span>
+            <select id="spectralMode" disabled>
+              <option value="true-color" selected>True Color · RGB B04/B03/B02</option>
+              <option value="false-color">Tán lá/ranh rừng · B08/B04/B03</option>
+              <option value="ndvi">NDVI · độ xanh sinh khối</option>
+              <option value="ndre">NDRE · chlorophyll/rừng dày</option>
+              <option value="ndmi">NDMI · độ ẩm tán lá</option>
+              <option value="nbr">NBR · cháy/suy thoái</option>
+              <option value="ndwi">NDWI · mặt nước/ẩm thấp</option>
+              <option value="savi">SAVI · cây thưa/đất trống</option>
+            </select>
+          </div>
+          <div class="ndvi-legend" id="ndviLegend">
+            <span id="legendMin">-0,2</span><i id="legendRamp"></i><span id="legendMax">0,9</span>
+            <small id="legendDescription">Ít thực vật → tán lá khỏe</small>
+          </div>
+          <label class="layer-row">
+            <span class="layer-icon forest"><svg viewBox="0 0 24 24"><path d="m12 3-5 7h3l-5 7h14l-5-7h3Z"/><path d="M12 17v4"/></svg></span>
+            <span><strong>Rừng 3D</strong><small>Phủ kín bên trong polygon</small></span>
+            <input class="switch" id="forestToggle" type="checkbox" />
+          </label>
+          <label class="layer-row">
+            <span class="layer-icon zones"><svg viewBox="0 0 24 24"><path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span>
+            <span><strong>Ranh giới KML</strong><small>Polygon lô rừng</small></span>
+            <input class="switch" id="zoneToggle" type="checkbox" checked />
+          </label>
+        </section>
+
+        <section class="control-section density-control">
+          <div class="section-heading"><span>MẬT ĐỘ HIỂN THỊ</span><output id="densityValue">65%</output></div>
+          <input id="densityRange" type="range" min="20" max="100" value="65" step="5" />
+          <div class="range-labels"><span>Thoáng</span><span>Dày</span></div>
+        </section>
+
+        <section class="stats-card">
+          <div><small>LÔ RỪNG</small><strong id="visibleRegions">—</strong><span>polygon</span></div>
+          <div><small>DIỆN TÍCH</small><strong id="totalArea">—</strong><span>hecta</span></div>
+          <div><small>CÂY 3D</small><strong id="carbonTotal">—</strong><span>đối tượng</span></div>
+        </section>
+
+        <section class="health-card" id="healthCard">
+          <div class="health-head">
+            <span>ĐÁNH GIÁ THẢM THỰC VẬT</span>
+            <strong id="analysisConfidence">Đang chờ ảnh...</strong>
+          </div>
+          <div class="health-score">
+            <div><small>NDVI TRUNG BÌNH</small><strong id="ndviMean">—</strong></div>
+            <div><small>ĐIỂM XANH NDVI</small><strong id="densityClass">—</strong></div>
+            <div><small>SỨC KHỎE</small><strong id="healthClass">—</strong></div>
+          </div>
+          <div class="ndvi-meter"><i id="ndviBar"></i><span></span></div>
+          <div class="ndvi-ticks"><span>-0,2</span><span>0,2</span><span>0,5</span><span>0,9</span></div>
+          <p id="analysisNote">Đang đợi dữ liệu Sentinel‑2 để phân tích polygon.</p>
+        </section>
+
+        <p class="data-note">NDVI là chỉ báo tương đối về độ xanh và sức khỏe tán lá, không thay thế kiểm kê rừng thực địa.</p>
+      </aside>
+
+      <div class="map-tools" aria-label="Công cụ bản đồ">
+        <button id="zoomIn" aria-label="Phóng to">+</button>
+        <button id="zoomOut" aria-label="Thu nhỏ">−</button>
+        <span></span>
+        <button id="toggle2D" aria-label="Chuyển chế độ 2D/3D"><b>2D</b></button>
+      </div>
+
+      <div class="region-card" id="regionCard" aria-live="polite">
+        <button id="closeCard" aria-label="Đóng">×</button>
+        <span class="card-type" id="cardType">POLYGON KML</span>
+        <h2 id="cardName">Lô rừng</h2>
+        <p id="cardDescription"></p>
+        <div class="card-metrics"><div><strong id="cardArea">—</strong><small>hecta</small></div><div><strong id="cardCarbon">—</strong><small>cây 3D</small></div></div>
+        <button class="fly-button" id="flyCloser">Khám phá cận cảnh <span>↗</span></button>
+      </div>
+
+      <footer class="map-footer">
+        <span><i class="pulse"></i> KML ĐÃ KẾT NỐI</span>
+        <span id="cameraCoords">16.30°N · 106.20°E</span>
+        <span>Nền tham chiếu Esri/Maxar · Sentinel-2 ESA/Microsoft Planetary Computer · CesiumJS</span>
+      </footer>
+    </div>
+
+    <div class="loading" id="loadingScreen"><span class="loading-tree">♠</span><strong>Đang gieo rừng số...</strong></div>
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.142/Build/Cesium/Cesium.js"></script>
+    <script src="./spectral-export.js?v=forest-indices-20260701"></script>
+    <script src="./app.js?v=forest-indices-20260701"></script>
+  </body>
+</html>

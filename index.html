@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Bản đồ vệ tinh lô rừng Việt Nam với CesiumJS và Sentinel-2" />
+    <title>Lâm Kính — Rừng Việt Nam 3D (React)</title>
+    <link rel="preconnect" href="https://tile.openstreetmap.org" />
+    <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.142/Build/Cesium/Widgets/widgets.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Load CesiumJS and Spectral script globally -->
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.142/Build/Cesium/Cesium.js"></script>
+    <script src="/spectral-export.js?v=forest-indices-20260701"></script>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
