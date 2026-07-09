@@ -18,6 +18,7 @@ export function initCesiumMap(containerId, callbacks) {
   let densityTimer;
   let spectralLayer = null;
   const spectralLayerCache = new Map();
+  let spectralLayerVisible = true;
   let activeSpectralPlot = null;
   let isDrawing = false;
   let drawPoints = [];
@@ -26,6 +27,7 @@ export function initCesiumMap(containerId, callbacks) {
   let spectralRenderToken = 0;
   let currentSpectralMode = "true-color";
   const SENTINEL_CLOUD_THRESHOLD = 35;
+  const PLOT_FOCUS_PADDING = 0.18;
 
   const SPECTRAL_MODES = {
     "true-color": {
@@ -323,11 +325,58 @@ export function initCesiumMap(containerId, callbacks) {
     return polygonEntity;
   }
 
+  function plotPortfolioRow(plot) {
+    const ndvi = plot.analysis?.indices?.ndvi?.mean ?? plot.analysis?.mean;
+    const cloud = Number(plot.analysisItem?.properties?.["eo:cloud_cover"]);
+    let health = "Đang chờ ảnh";
+    let tone = "pending";
+    if (plot.analysis?.error) {
+      health = "Cần kiểm tra";
+      tone = "warning";
+    } else if (Number.isFinite(ndvi)) {
+      if (ndvi >= 0.6) {
+        health = "Rừng xanh dày";
+        tone = "good";
+      } else if (ndvi >= 0.4) {
+        health = "Phát triển tốt";
+        tone = "good";
+      } else if (ndvi >= 0.25) {
+        health = "Thực vật thưa";
+        tone = "watch";
+      } else {
+        health = "Ít thực vật";
+        tone = "warning";
+      }
+    } else if (plot.analysisItem) {
+      health = "Đang phân tích";
+      tone = "pending";
+    }
+    return {
+      id: plot.id,
+      name: plot.name,
+      sourceName: plot.sourceName,
+      area: plot.area,
+      areaText: plot.area.toLocaleString("vi-VN", { maximumFractionDigits: 1 }),
+      drawn: Boolean(plot.drawn),
+      selected: selectedPlot?.id === plot.id,
+      health,
+      tone,
+      ndvi: Number.isFinite(ndvi) ? ndvi.toFixed(3) : "—",
+      cloud: Number.isFinite(cloud) ? cloud.toFixed(1) : "—",
+      center: plot.center
+    };
+  }
+
+  function emitPlotPortfolio() {
+    callbacks.onPlotsChange?.(plots.map(plotPortfolioRow));
+  }
+
   function updatePlotSummary() {
     const totalArea = plots.reduce((sum, plot) => sum + plot.area, 0);
     callbacks.onVisibleRegionsChange(String(plots.length).padStart(2, "0"));
     callbacks.onTotalAreaChange(totalArea.toLocaleString("vi-VN", { maximumFractionDigits: 1 }));
     callbacks.onClearDrawnDisabledChange?.(!plots.some((plot) => plot.drawn));
+    emitPlotPortfolio();
   }
 
   function screenToLonLat(screenPosition) {
@@ -475,23 +524,54 @@ export function initCesiumMap(containerId, callbacks) {
 
   function updateCard(plot, analyze = true) {
     selectedPlot = plot;
-    callbacks.onCardChange({ type: plot.drawn ? "POLYGON VẼ" : "POLYGON KML", name: plot.name, description: `Đường biên gồm ${plot.ring.length - 1} đỉnh, đọc trực tiếp từ “${plot.sourceName}”.`, area: plot.area, carbon: Math.min(900, Math.max(30, Math.round(plot.area * 8 * density / 100))), plot });
+    activeSpectralPlot = plot;
+    callbacks.onCardChange({
+      type: plot.drawn ? "POLYGON VẼ" : "POLYGON KML",
+      name: plot.name,
+      description: `Đường biên gồm ${plot.ring.length - 1} đỉnh, đọc trực tiếp từ “${plot.sourceName}”.`,
+      area: plot.area.toLocaleString("vi-VN", { maximumFractionDigits: 2 }),
+      carbon: Math.min(900, Math.max(30, Math.round(plot.area * 8 * density / 100))),
+      plot
+    });
     
     
     
     
     callbacks.onCardOpen(true);
     updateAnalysisPanel(plot);
+    emitPlotPortfolio();
+    if (plot.analysisItem) {
+      renderSpectralLayer(currentSpectralMode, plot);
+    } else if (spectralLayer) {
+      spectralLayer.show = false;
+      scene.requestRender();
+    }
     if (!analyze) return;
     ensurePlotAnalysis(plot).catch((error) => {
       plot.analysis = { error: `Không thể phân tích polygon này: ${error.message}` };
       if (selectedPlot?.id === plot.id) updateAnalysisPanel(plot);
+      emitPlotPortfolio();
     });
+  }
+
+  function selectPlot(plotId) {
+    const plot = plots.find((item) => item.id === plotId);
+    if (!plot) return;
+    updateCard(plot);
+    viewer.camera.flyTo({ destination: paddedRectangleForPlot(plot, PLOT_FOCUS_PADDING), duration: 1.1 });
   }
 
   function flyToAll(duration = 1.6) {
     if (!dataRectangle) return;
     viewer.camera.flyTo({ destination: dataRectangle, duration });
+  }
+
+  function flyToSelectedPlot(duration = 1.1) {
+    if (selectedPlot) {
+      viewer.camera.flyTo({ destination: paddedRectangleForPlot(selectedPlot, PLOT_FOCUS_PADDING), duration });
+      return;
+    }
+    flyToAll(duration);
   }
 
   function formatSceneDate(value) {
@@ -573,10 +653,25 @@ export function initCesiumMap(containerId, callbacks) {
   }
 
   function rectangleForSentinelItem(plot) {
-    // All band combinations must use one stable extent. Otherwise changing
-    // bands can leave only the currently selected STAC footprint refreshed.
-    if (dataRectangle) return dataRectangle;
-    return paddedRectangleForPlot(plot, 1.6);
+    return paddedRectangleForPlot(plot, PLOT_FOCUS_PADDING);
+  }
+
+  function rectangleForReportSnapshot(plot) {
+    const plotRectangle = rectangleForSentinelItem(plot);
+    const bbox = plot?.analysisItem?.bbox;
+    if (!Array.isArray(bbox) || bbox.length < 4) return plotRectangle;
+    const itemRectangle = Cesium.Rectangle.fromDegrees(
+      Number(bbox[0]),
+      Number(bbox[1]),
+      Number(bbox[2]),
+      Number(bbox[3])
+    );
+    const west = Math.max(plotRectangle.west, itemRectangle.west);
+    const south = Math.max(plotRectangle.south, itemRectangle.south);
+    const east = Math.min(plotRectangle.east, itemRectangle.east);
+    const north = Math.min(plotRectangle.north, itemRectangle.north);
+    if (west >= east || south >= north) return plotRectangle;
+    return new Cesium.Rectangle(west, south, east, north);
   }
 
   async function analyzeIndexForPlot(plot, item, key, config) {
@@ -614,6 +709,7 @@ export function initCesiumMap(containerId, callbacks) {
     plot.analysis = null;
     plot.analysisItem = item;
     if (selectedPlot?.id === plot.id) updateAnalysisPanel(plot);
+    emitPlotPortfolio();
     try {
       const entries = await Promise.all(Object.entries(ANALYSIS_INDICES).map(async ([key, config]) => [
         key,
@@ -632,6 +728,7 @@ export function initCesiumMap(containerId, callbacks) {
       plot.analysis = { error: `Chưa thể tính chỉ số phổ trong polygon: ${error.message}` };
     }
     if (selectedPlot?.id === plot.id) updateAnalysisPanel(plot);
+    emitPlotPortfolio();
   }
 
   function spectralTileUrl(item, mode) {
@@ -664,11 +761,10 @@ export function initCesiumMap(containerId, callbacks) {
     currentSpectralMode = SPECTRAL_MODES[mode] ? mode : "true-color";
     activeSpectralPlot = plot || activeSpectralPlot;
     const config = SPECTRAL_MODES[currentSpectralMode];
-    const wasVisible = spectralLayer ? spectralLayer.show : true;
     const token = ++spectralRenderToken;
     if (spectralLayer) spectralLayer.show = false;
     clearIndexOverlay();
-    const cacheKey = `${plot.analysisItem.id}:${currentSpectralMode}`;
+    const cacheKey = `${plot.id}:${plot.analysisItem.id}:${currentSpectralMode}`;
     spectralLayer = spectralLayerCache.get(cacheKey);
     if (!spectralLayer) {
       const provider = new Cesium.UrlTemplateImageryProvider({
@@ -683,14 +779,14 @@ export function initCesiumMap(containerId, callbacks) {
       spectralLayerCache.set(cacheKey, spectralLayer);
     }
     spectralLayer.alpha = config.alpha;
-    spectralLayer.show = wasVisible;
+    spectralLayer.show = spectralLayerVisible;
     spectralLayer.brightness = currentSpectralMode === "true-color" ? 1.0 : 1;
     spectralLayer.contrast = 1.08;
     spectralLayer.saturation = currentSpectralMode === "true-color" ? 1.02 : 1.04;
     spectralLayer.gamma = 1;
     viewer.imageryLayers.raiseToTop(spectralLayer);
-    spectralLayer.show = wasVisible;
-    callbacks.onSatelliteCheckedChange(wasVisible);
+    spectralLayer.show = spectralLayerVisible;
+    callbacks.onSatelliteCheckedChange(spectralLayerVisible);
     $("#ndviLegend").classList.toggle("open", Boolean(config.expression));
     if (config.expression) {
       
@@ -844,12 +940,9 @@ export function initCesiumMap(containerId, callbacks) {
       callbacks.onCameraCoordsChange(`${plots[0].center.lat.toFixed(4)}°N · ${plots[0].center.lon.toFixed(4)}°E`);
       rebuildForest();
       renderSearchResults();
-      // The initial scene loader supplies one Sentinel item for the complete
-      // map. Avoid starting a competing per-polygon request here.
-      updateCard(plots[0], false);
+      updateCard(plots[0]);
       flyToAll(0);
       callbacks.onSpectralStatusChange("Đang tải Sentinel-2 L2A...");
-      loadLatestSentinel(allBounds);
       setTimeout(() => callbacks.onLoading(false), 500);
     } catch (error) {
       callbacks.onLoadingError(error.message);
@@ -861,22 +954,17 @@ export function initCesiumMap(containerId, callbacks) {
     try {
       const parsedPlots = parseKml(kmlText);
       if (!parsedPlots.length) throw new Error("KML không chứa polygon nào.");
-      
-      // Clear old state
-      boundarySource.entities.removeAll();
-      forestSource.entities.removeAll();
-      indexOverlaySource.entities.removeAll();
-      plots.length = 0;
-      selectedPlot = null;
-      activeSpectralPlot = null;
-      spectralLayerCache.clear();
-      if (spectralLayer) {
-        viewer.imageryLayers.remove(spectralLayer);
-        spectralLayer = null;
-      }
-      
-      plots.push(...parsedPlots);
-      plots.forEach(addPlotBoundary);
+
+      const uploadId = `upload-${Date.now()}`;
+      const startNumber = plots.length + 1;
+      const addedPlots = parsedPlots.map((plot, index) => ({
+        ...plot,
+        id: `${uploadId}-${index}`,
+        name: `Lô rừng ${startNumber + index}`
+      }));
+
+      plots.push(...addedPlots);
+      addedPlots.forEach(addPlotBoundary);
       
       const allBounds = plots.reduce((bounds, plot) => ({
         west: Math.min(bounds.west, plot.bounds.west), east: Math.max(bounds.east, plot.bounds.east),
@@ -891,15 +979,14 @@ export function initCesiumMap(containerId, callbacks) {
       );
       
       updatePlotSummary();
-      callbacks.onCameraCoordsChange(`${plots[0].center.lat.toFixed(4)}°N · ${plots[0].center.lon.toFixed(4)}°E`);
+      callbacks.onCameraCoordsChange(`${addedPlots[0].center.lat.toFixed(4)}°N · ${addedPlots[0].center.lon.toFixed(4)}°E`);
       rebuildForest();
       renderSearchResults();
       
-      updateCard(plots[0], false);
-      flyToAll(2.0);
+      updateCard(addedPlots[0]);
+      viewer.camera.flyTo({ destination: paddedRectangleForPlot(addedPlots[0], PLOT_FOCUS_PADDING), duration: 1.1 });
       
       callbacks.onSpectralStatusChange("Đang tải Sentinel-2 L2A...");
-      await loadLatestSentinel(allBounds);
     } catch (error) {
       window.alert(`Không thể đọc KML: ${error.message}`);
     }
@@ -943,7 +1030,7 @@ export function initCesiumMap(containerId, callbacks) {
   
   
   function toggleReference(visible) { referenceLayer.show = visible; scene.requestRender(); }
-  function toggleSatellite(visible) { if(spectralLayer) spectralLayer.show = visible; indexOverlaySource.show = visible; scene.requestRender(); }
+  function toggleSatellite(visible) { spectralLayerVisible = visible; if(spectralLayer) spectralLayer.show = visible; indexOverlaySource.show = visible; scene.requestRender(); }
   function setSpectralMode(mode) {
     currentSpectralMode = SPECTRAL_MODES[mode] ? mode : "true-color";
     renderSpectralLayer(currentSpectralMode, activeSpectralPlot || selectedPlot);
@@ -958,7 +1045,7 @@ export function initCesiumMap(containerId, callbacks) {
   async function calculateCoverAndValue(options = {}) {
     const plot = selectedPlot || plots[0];
     if (!plot) throw new Error("Chưa có polygon để tính độ che phủ.");
-    callbacks.onCoverUpdate?.({ status: "loading", note: "Đang tính bằng Microsoft Planetary Computer..." });
+    callbacks.onCoverUpdate?.({ status: "loading", plotId: plot.id, plotName: plot.name, note: "Đang tính bằng Microsoft Planetary Computer..." });
     const response = await fetch("/api/cover", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -966,8 +1053,9 @@ export function initCesiumMap(containerId, callbacks) {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || `Cover API HTTP ${response.status}`);
-    callbacks.onCoverUpdate?.({ status: "ok", plotName: plot.name, ...result });
-    return result;
+    const scopedResult = { status: "ok", plotId: plot.id, plotName: plot.name, ...result };
+    callbacks.onCoverUpdate?.(scopedResult);
+    return scopedResult;
   }
 
   function toggle2D() { is3D = !is3D; if (is3D) scene.morphTo3D(1); else scene.morphTo2D(1); }
@@ -1003,6 +1091,59 @@ export function initCesiumMap(containerId, callbacks) {
     return scene.canvas.toDataURL("image/jpeg", 0.92);
   }
 
+  function screenPointForLonLat(lon, lat) {
+    const toWindow = Cesium.SceneTransforms?.wgs84ToWindowCoordinates
+      || Cesium.SceneTransforms?.worldToWindowCoordinates;
+    if (typeof toWindow !== "function") return null;
+    const position = Cesium.Cartesian3.fromDegrees(lon, lat);
+    return toWindow(scene, position);
+  }
+
+  function getRectangleSnapshot(rectangle, quality = 0.92) {
+    scene.render();
+    const canvas = scene.canvas;
+    const corners = [
+      screenPointForLonLat(Cesium.Math.toDegrees(rectangle.west), Cesium.Math.toDegrees(rectangle.south)),
+      screenPointForLonLat(Cesium.Math.toDegrees(rectangle.west), Cesium.Math.toDegrees(rectangle.north)),
+      screenPointForLonLat(Cesium.Math.toDegrees(rectangle.east), Cesium.Math.toDegrees(rectangle.south)),
+      screenPointForLonLat(Cesium.Math.toDegrees(rectangle.east), Cesium.Math.toDegrees(rectangle.north))
+    ].filter(Boolean);
+    if (corners.length < 4) return getMapSnapshot();
+
+    const pixelRatio = canvas.width / Math.max(canvas.clientWidth, 1);
+    const xs = corners.map((point) => point.x * pixelRatio);
+    const ys = corners.map((point) => point.y * pixelRatio);
+    const pad = 0;
+    let left = Math.floor(Math.min(...xs) - pad);
+    let top = Math.floor(Math.min(...ys) - pad);
+    let right = Math.ceil(Math.max(...xs) + pad);
+    let bottom = Math.ceil(Math.max(...ys) + pad);
+    if (left < 0) {
+      right -= left;
+      left = 0;
+    }
+    if (top < 0) {
+      bottom -= top;
+      top = 0;
+    }
+    if (right > canvas.width) {
+      left = Math.max(0, left - (right - canvas.width));
+      right = canvas.width;
+    }
+    if (bottom > canvas.height) {
+      top = Math.max(0, top - (bottom - canvas.height));
+      bottom = canvas.height;
+    }
+    const width = Math.max(1, right - left);
+    const height = Math.max(1, bottom - top);
+
+    const output = document.createElement("canvas");
+    output.width = width;
+    output.height = height;
+    output.getContext("2d").drawImage(canvas, left, top, width, height, 0, 0, width, height);
+    return output.toDataURL("image/jpeg", quality);
+  }
+
   function waitForImagery(timeoutMs = 1400) {
     return new Promise((resolve) => {
       let settled = false;
@@ -1023,25 +1164,30 @@ export function initCesiumMap(containerId, callbacks) {
   }
 
   async function getReportSnapshots() {
-    const plot = activeSpectralPlot || selectedPlot || plots[0];
+    const plot = selectedPlot || activeSpectralPlot || plots[0];
     const originalMode = currentSpectralMode;
     const captures = {};
     if (!plot?.analysisItem) {
-      captures.rgb = getMapSnapshot();
-      return captures;
+      await ensurePlotAnalysis(plot);
     }
+    if (!plot?.analysisItem) {
+      throw new Error("Lô đang chọn chưa có ảnh Sentinel-2 để tạo báo cáo.");
+    }
+    const reportRectangle = rectangleForReportSnapshot(plot);
+    viewer.camera.setView({ destination: reportRectangle });
+    await waitForImagery(900);
     const modes = [
       ["rgb", "true-color"],
       ["falseColor", "false-color"],
       ["ndvi", "ndvi"],
-      ["ndre", "ndre"],
+      ["gci", "gci"],
       ["ndmi", "ndmi"]
     ];
     for (const [key, mode] of modes) {
       try {
         await renderSpectralLayer(mode, plot);
         await waitForImagery(mode === "true-color" ? 900 : 1200);
-        captures[key] = getMapSnapshot();
+        captures[key] = getRectangleSnapshot(reportRectangle);
       } catch (error) {
         console.warn(`Không thể chụp lớp ${mode}:`, error);
       }
@@ -1051,5 +1197,5 @@ export function initCesiumMap(containerId, callbacks) {
     return captures;
   }
 
-  return { loadCustomKml, setDensity, toggleDrawing, flyToAll, zoomIn, zoomOut, toggleReference, toggleSatellite, setSpectralMode, toggleForest, toggleZone, toggle2D, calculateCoverAndValue, exportMap, getMapSnapshot, getReportSnapshots, destroy };
+  return { loadCustomKml, setDensity, toggleDrawing, flyToAll, flyToSelectedPlot, zoomIn, zoomOut, toggleReference, toggleSatellite, setSpectralMode, toggleForest, toggleZone, toggle2D, selectPlot, calculateCoverAndValue, exportMap, getMapSnapshot, getReportSnapshots, destroy };
 }

@@ -1,7 +1,9 @@
-import { useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 
 export default function ControlPanel({ 
   stats, 
+  plots = [],
+  selectedPlotId,
   status, 
   analysis, 
   spectralMode,
@@ -17,9 +19,11 @@ export default function ControlPanel({
   coverOptions,
   onSetCoverOptions,
   onCalculateCover,
-  onUploadKml
+  onUploadKml,
+  onSelectPlot
 }) {
   const fileInputRef = useRef(null);
+  const [plotQuery, setPlotQuery] = useState('');
 
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
@@ -34,23 +38,74 @@ export default function ControlPanel({
 
   const fmt = (value, digits = 1) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '—';
   const money = (value) => Number.isFinite(Number(value)) ? new Intl.NumberFormat('vi-VN', { notation: 'compact', maximumFractionDigits: 1 }).format(Number(value)) : '—';
-  const metrics = cover?.metrics;
-  const valuation = cover?.valuation;
-  const busy = cover?.status === 'loading';
-  const sceneDate = cover?.selected_scene?.datetime ? new Date(cover.selected_scene.datetime).toLocaleDateString('vi-VN') : null;
-  const coverNote = cover?.note || (
-    metrics && cover?.selected_scene
-      ? `Scene ${sceneDate} · scene cloud ${fmt(cover.selected_scene.eo_cloud_cover, 1)}% · AOI cloud ${fmt(metrics.aoi_cloud_pct, 1)}% · valid ${fmt(metrics.valid_pixel_pct, 1)}%`
+  const coverBelongsToSelection = !cover?.plotId || !selectedPlotId || cover.plotId === selectedPlotId;
+  const activeCover = coverBelongsToSelection ? cover : null;
+  const metrics = activeCover?.metrics;
+  const valuation = activeCover?.valuation;
+  const busy = activeCover?.status === 'loading';
+  const sceneDate = activeCover?.selected_scene?.datetime ? new Date(activeCover.selected_scene.datetime).toLocaleDateString('vi-VN') : null;
+  const totalArea = plots.reduce((sum, plot) => sum + (Number(plot.area) || 0), 0);
+  const selectedPlot = plots.find((plot) => plot.id === selectedPlotId);
+  const filteredPlots = useMemo(() => {
+    const normalized = plotQuery.trim().toLocaleLowerCase('vi');
+    if (!normalized) return plots;
+    return plots.filter((plot) => `${plot.name} ${plot.sourceName} ${plot.health}`.toLocaleLowerCase('vi').includes(normalized));
+  }, [plotQuery, plots]);
+  const coverNote = activeCover?.note || (
+    metrics && activeCover?.selected_scene
+      ? `Scene ${sceneDate} · scene cloud ${fmt(activeCover.selected_scene.eo_cloud_cover, 1)}% · AOI cloud ${fmt(metrics.aoi_cloud_pct, 1)}% · valid ${fmt(metrics.valid_pixel_pct, 1)}%`
       : 'Dung Microsoft Planetary Computer STAC + stackstac, clip polygon va tinh NDVI >= 0.45.'
   );
 
   return (
     <aside className="panel" id="controlPanel">
       <div className="panel-intro">
-        <span className="eyebrow">BẢN ĐỒ TƯƠNG TÁC</span>
-        <h1>Lô rừng 68 ha<br/><em>phủ xanh từng đường biên.</em></h1>
-        <p>Trực quan hóa toàn bộ polygon từ KML bằng ranh giới chính xác và lớp cây 3D procedural.</p>
+        <span className="eyebrow">TRUNG TÂM QUẢN LÝ RỪNG KEO</span>
+        <h1>Quản lý nhiều lô rừng<br/><em>trong một màn hình.</em></h1>
+        <p>Theo dõi danh mục lô, diện tích, sức khỏe tán cây và ảnh vệ tinh để biết ngay khu nào cần ưu tiên chăm sóc.</p>
       </div>
+
+      <section className="portfolio-card">
+        <div className="portfolio-hero">
+          <div>
+            <span>Danh mục khách hàng</span>
+            <strong>{plots.length ? `${plots.length} lô` : 'Đang tải'}</strong>
+            <small>{totalArea ? `${totalArea.toLocaleString('vi-VN', { maximumFractionDigits: 1 })} ha đang quản lý` : 'Chưa có dữ liệu diện tích'}</small>
+          </div>
+          <div className="portfolio-focus">
+            <span>Đang xem</span>
+            <strong>{selectedPlot?.name || '—'}</strong>
+          </div>
+        </div>
+        <div className="portfolio-search">
+          <svg viewBox="0 0 24 24"><path d="m21 21-4.3-4.3M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z"/></svg>
+          <input
+            value={plotQuery}
+            onChange={(event) => setPlotQuery(event.target.value)}
+            placeholder="Tìm tên lô, nguồn KML, tình trạng..."
+            aria-label="Tìm lô rừng"
+          />
+        </div>
+        <div className="plot-list">
+          {filteredPlots.length ? filteredPlots.map((plot) => (
+            <button
+              type="button"
+              className={`plot-row ${plot.id === selectedPlotId ? 'active' : ''}`}
+              key={plot.id}
+              onClick={() => onSelectPlot?.(plot.id)}
+            >
+              <span className={`plot-status ${plot.tone}`}></span>
+              <span className="plot-main">
+                <strong>{plot.name}</strong>
+                <small>{plot.areaText} ha · NDVI {plot.ndvi} · mây {plot.cloud}%</small>
+              </span>
+              <span className="plot-health">{plot.health}</span>
+            </button>
+          )) : (
+            <div className="plot-empty">Không tìm thấy lô phù hợp.</div>
+          )}
+        </div>
+      </section>
 
       <div className="draw-tools" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '7px' }}>
         <button id="drawPolygon" className={`draw-primary ${isDrawing ? 'active' : ''}`} onClick={onToggleDrawing}>
@@ -151,7 +206,7 @@ export default function ControlPanel({
       <section className="cover-card">
         <div className="health-head">
           <span>DO CHE PHU & GIA TRI</span>
-          <strong>{busy ? 'Dang tinh...' : cover?.status === 'ok' ? 'Microsoft API' : 'StackSTAC'}</strong>
+          <strong>{busy ? 'Dang tinh...' : activeCover?.status === 'ok' ? 'Microsoft API' : 'StackSTAC'}</strong>
         </div>
         <div className="cover-form">
           <label>

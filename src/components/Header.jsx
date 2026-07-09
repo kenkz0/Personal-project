@@ -6,7 +6,7 @@ const REPORT_OPTIONS = [
   { type: 'investor', label: 'Báo cáo cho nhà đầu tư', description: '10 trang A4, sinh lời, ROI, kế hoạch khai thác' },
 ];
 
-export default function Header({ onExport, isExporting, onFlyToAll, onTogglePanel }) {
+export default function Header({ onExport, isExporting, onFlyToSelected, onTogglePanel }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef(null);
 
@@ -64,7 +64,7 @@ export default function Header({ onExport, isExporting, onFlyToAll, onTogglePane
             </div>
           )}
         </div>
-        <button className="icon-button" id="resetView" onClick={onFlyToAll} title="Về góc nhìn Việt Nam" aria-label="Về góc nhìn Việt Nam">
+        <button className="icon-button" id="resetView" onClick={onFlyToSelected} title="Về lô đang chọn" aria-label="Về lô đang chọn">
           <svg viewBox="0 0 24 24"><path d="M3 11 12 4l9 7M5 10v10h14V10M9 20v-6h6v6" /></svg>
         </button>
         <button className="icon-button" id="togglePanel" onClick={onTogglePanel} title="Ẩn/hiện bảng điều khiển" aria-label="Ẩn hiện bảng điều khiển">

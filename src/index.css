@@ -81,9 +81,36 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .panel { position: fixed; z-index: 10; left: 22px; top: 88px; bottom: 42px; width: 380px; padding: 24px; overflow: auto; border: 1px solid var(--line); border-radius: 20px; background: var(--panel); box-shadow: 0 24px 80px rgba(0,0,0,.42); backdrop-filter: blur(22px); transition: transform .35s ease, opacity .35s ease; scrollbar-width: thin; scrollbar-color: #355541 transparent; }
 .panel.hidden { transform: translateX(calc(-100% - 35px)); opacity: 0; pointer-events: none; }
 .eyebrow { color: var(--green); font-size: 9px; letter-spacing: .2em; font-weight: 750; }
-.panel h1 { margin: 8px 0 11px; font-family: ui-serif, Georgia, "Times New Roman", serif; font-size: 28px; line-height: 1.12; font-weight: 500; letter-spacing: -.02em; }
-.panel h1 em { color: #b4c7b8; font-weight: 400; }
+.panel h1 { margin: 8px 0 11px; font-family: "Segoe UI", Arial, ui-sans-serif, system-ui, sans-serif; font-size: 27px; line-height: 1.14; font-weight: 700; letter-spacing: 0; }
+.panel h1 em { color: #b4c7b8; font-weight: 500; font-style: italic; }
 .panel-intro p { max-width: 290px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+
+.portfolio-card { margin: 18px 0 14px; padding: 13px; border: 1px solid rgba(139,212,80,.2); border-radius: 12px; background: linear-gradient(135deg, rgba(139,212,80,.11), rgba(67,139,174,.06)); }
+.portfolio-hero { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr); gap: 9px; align-items: stretch; }
+.portfolio-hero > div { min-width: 0; padding: 11px; border: 1px solid rgba(255,255,255,.07); border-radius: 9px; background: rgba(5,16,11,.38); }
+.portfolio-hero span, .portfolio-hero small { display: block; }
+.portfolio-hero span { color: #91a69a; font-size: 8px; letter-spacing: .12em; text-transform: uppercase; }
+.portfolio-hero strong { display: block; margin-top: 5px; color: #eaf4ec; font-size: 20px; line-height: 1.1; font-weight: 750; }
+.portfolio-hero small { margin-top: 5px; color: #7f9488; font-size: 9px; line-height: 1.35; }
+.portfolio-focus strong { color: #bfe6a4; font-size: 13px; line-height: 1.25; }
+.portfolio-search { height: 38px; margin-top: 10px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.04); }
+.portfolio-search svg { width: 15px; flex: 0 0 auto; fill: none; stroke: #8ca194; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.portfolio-search input { min-width: 0; flex: 1; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 11px; }
+.portfolio-search input::placeholder { color: #667a70; }
+.plot-list { max-height: 235px; margin-top: 10px; overflow: auto; display: grid; gap: 7px; scrollbar-width: thin; scrollbar-color: #355541 transparent; }
+.plot-row { width: 100%; min-height: 58px; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 9px; border: 1px solid rgba(255,255,255,.07); border-radius: 9px; color: #eaf4ec; background: rgba(255,255,255,.025); text-align: left; cursor: pointer; }
+.plot-row:hover, .plot-row.active { border-color: rgba(139,212,80,.45); background: rgba(139,212,80,.09); }
+.plot-status { width: 8px; height: 34px; border-radius: 6px; background: #7d9285; }
+.plot-status.good { background: #8bd450; }
+.plot-status.watch { background: #d6b56c; }
+.plot-status.warning { background: #e77b68; }
+.plot-status.pending { background: #6ea8d9; }
+.plot-main { min-width: 0; }
+.plot-main strong, .plot-main small { display: block; }
+.plot-main strong { overflow: hidden; color: #eef8f0; font-size: 11px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.plot-main small { margin-top: 4px; color: #7f9488; font-size: 9px; line-height: 1.3; }
+.plot-health { max-width: 88px; padding: 4px 6px; border-radius: 7px; color: #bdd9c2; background: rgba(255,255,255,.055); font-size: 8px; line-height: 1.25; text-align: center; }
+.plot-empty { padding: 14px; border: 1px dashed var(--line); border-radius: 9px; color: #809488; font-size: 10px; text-align: center; }
 
 .search-box { position: relative; height: 46px; margin: 20px 0 18px; display: flex; align-items: center; gap: 9px; padding: 0 11px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.045); }
 .search-box:focus-within { border-color: rgba(139,212,80,.5); box-shadow: 0 0 0 3px rgba(139,212,80,.08); }

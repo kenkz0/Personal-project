@@ -78,11 +78,13 @@ export default function App() {
   const [is3D, setIs3D] = useState(false);
   const [spectralMode, setSpectralMode] = useState('true-color');
   const [isExporting, setIsExporting] = useState(false);
+  const [plots, setPlots] = useState([]);
 
   const handleExportReport = async (reportType = 'health') => {
     if (isExporting) return;
     setIsExporting(true);
     try {
+      const selectedPlotId = card.plot?.id;
       let snapshot = `${window.location.origin}/image.png`;
       let snapshots = { rgb: snapshot };
       let snapshotWarning = 'Canvas bản đồ chưa sẵn sàng; báo cáo đang dùng ảnh minh họa dự phòng.';
@@ -96,7 +98,15 @@ export default function App() {
       } catch (captureError) {
         console.warn('Không thể chụp canvas Cesium cho báo cáo:', captureError);
       }
-      openReportBuilder({ snapshot, snapshots, snapshotWarning, stats, card, analysis, status, spectralMode, cover, coverOptions }, reportType);
+      const scopedCover = cover?.plotId && cover.plotId === selectedPlotId ? cover : {
+        status: 'idle',
+        note: 'Chưa tính độ che phủ cho lô đang chọn.',
+        metrics: null,
+        valuation: null,
+        selected_scene: null,
+        source: ''
+      };
+      openReportBuilder({ snapshot, snapshots, snapshotWarning, stats, card, analysis, status, spectralMode, cover: scopedCover, coverOptions, reportUrl: window.location.origin }, reportType);
     } catch (error) {
       window.alert(`Không thể tạo báo cáo PDF: ${error.message}`);
     } finally {
@@ -187,6 +197,7 @@ export default function App() {
       onLoading: (isLoading) => setStatus(s => ({ ...s, loading: isLoading })),
       onLoadingError: (err) => setStatus(s => ({ ...s, loadingError: err })),
       onCameraCoordsChange: (val) => setStatus(s => ({ ...s, cameraCoords: val })),
+      onPlotsChange: setPlots,
       onSearchResults: () => {}
     });
     mapLogic.current = logic;
@@ -204,12 +215,14 @@ export default function App() {
       <Header 
         onExport={handleExportReport}
         isExporting={isExporting}
-        onFlyToAll={() => mapLogic.current?.flyToAll()} 
+        onFlyToSelected={() => mapLogic.current?.flyToSelectedPlot()} 
         onTogglePanel={() => document.getElementById('controlPanel').classList.toggle('hidden')} 
       />
 
       <ControlPanel 
         stats={stats}
+        plots={plots}
+        selectedPlotId={card.plot?.id}
         status={status}
         analysis={analysis}
         spectralMode={spectralMode}
@@ -231,12 +244,13 @@ export default function App() {
         coverOptions={coverOptions}
         onSetCoverOptions={(patch) => setCoverOptions(s => ({ ...s, ...patch }))}
         onCalculateCover={() => {
-          setCover({ status: 'loading', note: 'Đang gửi polygon sang Microsoft Planetary Computer...', metrics: null, valuation: null });
+          setCover({ status: 'loading', plotId: card.plot?.id, plotName: card.plot?.name, note: 'Đang gửi polygon sang Microsoft Planetary Computer...', metrics: null, valuation: null });
           mapLogic.current?.calculateCoverAndValue(coverOptions).catch((error) => {
-            setCover({ status: 'error', note: error.message, metrics: null, valuation: null });
+            setCover({ status: 'error', plotId: card.plot?.id, plotName: card.plot?.name, note: error.message, metrics: null, valuation: null });
           });
         }}
         onUploadKml={handleUploadKml}
+        onSelectPlot={(id) => mapLogic.current?.selectPlot(id)}
       />
 
       <MapTools 
