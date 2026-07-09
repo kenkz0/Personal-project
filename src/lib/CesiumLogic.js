@@ -1,5 +1,8 @@
 export function initCesiumMap(containerId, callbacks) {
-  const COVER_API_BASE = (import.meta.env.VITE_COVER_API_URL || "").replace(/\/+$/, "");
+  const DEFAULT_COVER_API_BASE = import.meta.env.DEV
+    ? ""
+    : "https://personal-project-w5dk.onrender.com";
+  const COVER_API_BASE = (import.meta.env.VITE_COVER_API_URL || DEFAULT_COVER_API_BASE).replace(/\/+$/, "");
   const coverApiUrl = (path) => `${COVER_API_BASE}${path}`;
   const $ = () => ({
     get value() { return ""; }, set value(v) {},
