@@ -1,9 +1,5 @@
 export function initCesiumMap(containerId, callbacks) {
-  const COVER_API_BASE = (
-    import.meta.env.VITE_COVER_API_URL && import.meta.env.VITE_USE_DIRECT_COVER_API === "true"
-      ? import.meta.env.VITE_COVER_API_URL
-      : ""
-  ).replace(/\/+$/, "");
+  const COVER_API_BASE = (import.meta.env.VITE_COVER_API_URL || "").replace(/\/+$/, "");
   const coverApiUrl = (path) => `${COVER_API_BASE}${path}`;
   const $ = () => ({
     get value() { return ""; }, set value(v) {},

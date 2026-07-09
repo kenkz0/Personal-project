@@ -5,11 +5,11 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://lavender-define-unsaid.ngrok-free.dev/api/:path*"
+      "destination": "https://personal-project-w5dk.onrender.com/api/:path*"
     },
     {
       "source": "/health",
-      "destination": "https://lavender-define-unsaid.ngrok-free.dev/health"
+      "destination": "https://personal-project-w5dk.onrender.com/health"
     },
     {
       "source": "/((?!api/.*|health).*)",
