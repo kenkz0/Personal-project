@@ -1,4 +1,6 @@
 export function initCesiumMap(containerId, callbacks) {
+  const COVER_API_BASE = (import.meta.env.VITE_COVER_API_URL || "").replace(/\/+$/, "");
+  const coverApiUrl = (path) => `${COVER_API_BASE}${path}`;
   const $ = () => ({
     get value() { return ""; }, set value(v) {},
     get textContent() { return ""; }, set textContent(v) {},
@@ -1046,7 +1048,7 @@ export function initCesiumMap(containerId, callbacks) {
     const plot = selectedPlot || plots[0];
     if (!plot) throw new Error("Chưa có polygon để tính độ che phủ.");
     callbacks.onCoverUpdate?.({ status: "loading", plotId: plot.id, plotName: plot.name, note: "Đang tính bằng Microsoft Planetary Computer..." });
-    const response = await fetch("/api/cover", {
+    const response = await fetch(coverApiUrl("/api/cover"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ geojson: plotAsGeoJson(plot), options })
