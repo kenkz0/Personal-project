@@ -4,8 +4,12 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
+from collections import OrderedDict
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from hashlib import sha256
+from threading import Lock
 from urllib.parse import urlparse
 
 import geopandas as gpd
@@ -25,6 +29,10 @@ ALLOWED_ORIGINS = [
     for origin in os.environ.get("ALLOWED_ORIGINS", "*").split(",")
     if origin.strip()
 ]
+CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "21600"))
+CACHE_MAX_ITEMS = int(os.environ.get("CACHE_MAX_ITEMS", "64"))
+CACHE: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+CACHE_LOCK = Lock()
 CLOUD_SCL = {3, 8, 9, 10, 11}
 INVALID_SCL = {0, 1, 3, 8, 9, 10, 11}
 
@@ -57,6 +65,67 @@ def make_gdf(geojson: dict) -> gpd.GeoDataFrame:
     geometry = geojson.get("geometry", geojson)
     geom = shape(geometry)
     return gpd.GeoDataFrame({"id": [1]}, geometry=[geom], crs="EPSG:4326")
+
+
+def rounded_geometry(value):
+    if isinstance(value, float):
+        return round(value, 6)
+    if isinstance(value, list):
+        return [rounded_geometry(item) for item in value]
+    if isinstance(value, dict):
+        return {key: rounded_geometry(value[key]) for key in sorted(value)}
+    return value
+
+
+def cache_key(payload: dict) -> str:
+    options = payload.get("options", {})
+    stable_options = {
+        key: options.get(key)
+        for key in (
+            "model",
+            "age",
+            "soil",
+            "rainfall",
+            "priceVndM3",
+            "daysBack",
+            "sceneCloudMax",
+            "maxItems",
+            "epsg",
+            "resolution",
+        )
+    }
+    geometry = payload.get("geojson", {}).get("geometry", payload.get("geojson", {}))
+    stable_payload = {
+        "geometry": rounded_geometry(geometry),
+        "options": stable_options,
+        "date": date.today().isoformat(),
+    }
+    raw = json.dumps(stable_payload, sort_keys=True, separators=(",", ":"))
+    return sha256(raw.encode("utf-8")).hexdigest()
+
+
+def cache_get(key: str):
+    now = time.time()
+    with CACHE_LOCK:
+        cached = CACHE.get(key)
+        if not cached:
+            return None
+        created_at, value = cached
+        if now - created_at > CACHE_TTL_SECONDS:
+            CACHE.pop(key, None)
+            return None
+        CACHE.move_to_end(key)
+        cloned = json.loads(json.dumps(value))
+        cloned["cache"] = {"hit": True, "ttl_seconds": CACHE_TTL_SECONDS}
+        return cloned
+
+
+def cache_set(key: str, value: dict):
+    with CACHE_LOCK:
+        CACHE[key] = (time.time(), json.loads(json.dumps(value)))
+        CACHE.move_to_end(key)
+        while len(CACHE) > CACHE_MAX_ITEMS:
+            CACHE.popitem(last=False)
 
 
 def stac_items(gdf: gpd.GeoDataFrame, days_back: int, scene_cloud_max: float, max_items: int):
@@ -176,19 +245,30 @@ def calculate(payload: dict) -> dict:
         gdf,
         int(options.get("daysBack", 1095)),
         float(options.get("sceneCloudMax", 10)),
-        int(options.get("maxItems", 12)),
+        int(options.get("maxItems", 8)),
     )
     if not items:
         raise ValueError("No Sentinel-2 scenes found for polygon.")
 
     evaluated = []
+    evaluated_metrics = []
     selected = None
     selected_metrics = None
     epsg = int(options.get("epsg", 32648))
     resolution = float(options.get("resolution", 10))
 
     for item in items:
-        metrics = metrics_for_clipped(clip_item(item, gdf, epsg, resolution), resolution)
+        try:
+            metrics = metrics_for_clipped(clip_item(item, gdf, epsg, resolution), resolution)
+        except Exception as exc:  # noqa: BLE001
+            evaluated.append({
+                "item_id": item.id,
+                "datetime": item.datetime.isoformat() if item.datetime else None,
+                "eo_cloud_cover": item.properties.get("eo:cloud_cover"),
+                "error": str(exc),
+            })
+            evaluated_metrics.append(None)
+            continue
         row = {
             "item_id": item.id,
             "datetime": item.datetime.isoformat() if item.datetime else None,
@@ -197,18 +277,22 @@ def calculate(payload: dict) -> dict:
             "valid_pixel_pct": metrics["valid_pixel_pct"],
         }
         evaluated.append(row)
+        evaluated_metrics.append(metrics)
         if metrics["aoi_cloud_pct"] <= 5 and metrics["valid_pixel_pct"] >= 90:
             selected = item
             selected_metrics = metrics
             break
 
     if selected is None:
+        valid_indexes = [index for index, metrics in enumerate(evaluated_metrics) if metrics is not None]
+        if not valid_indexes:
+            raise ValueError("No valid Sentinel-2 pixels inside polygon.")
         best_index = sorted(
-            range(len(evaluated)),
+            valid_indexes,
             key=lambda i: (evaluated[i]["aoi_cloud_pct"], -evaluated[i]["valid_pixel_pct"]),
         )[0]
         selected = items[best_index]
-        selected_metrics = metrics_for_clipped(clip_item(selected, gdf, epsg, resolution), resolution)
+        selected_metrics = evaluated_metrics[best_index]
 
     valuation = estimate_value(selected_metrics, options)
     return {
@@ -222,6 +306,7 @@ def calculate(payload: dict) -> dict:
         "metrics": selected_metrics,
         "valuation": valuation,
         "evaluated": evaluated,
+        "cache": {"hit": False, "ttl_seconds": CACHE_TTL_SECONDS},
     }
 
 
@@ -262,7 +347,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            result = calculate(payload)
+            key = cache_key(payload)
+            result = cache_get(key)
+            if result is None:
+                result = calculate(payload)
+                cache_set(key, result)
             self._headers()
             self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
         except Exception as exc:  # noqa: BLE001
