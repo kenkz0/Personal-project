@@ -1050,7 +1050,10 @@ export function initCesiumMap(containerId, callbacks) {
     callbacks.onCoverUpdate?.({ status: "loading", plotId: plot.id, plotName: plot.name, note: "Đang tính bằng Microsoft Planetary Computer..." });
     const response = await fetch(coverApiUrl("/api/cover"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true"
+      },
       body: JSON.stringify({ geojson: plotAsGeoJson(plot), options })
     });
     const result = await response.json();
