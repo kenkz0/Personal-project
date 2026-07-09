@@ -4,6 +4,14 @@
   "framework": "vite",
   "rewrites": [
     {
+      "source": "/api/:path*",
+      "destination": "https://lavender-define-unsaid.ngrok-free.dev/api/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "https://lavender-define-unsaid.ngrok-free.dev/health"
+    },
+    {
       "source": "/((?!api/.*|health).*)",
       "destination": "/index.html"
     }
