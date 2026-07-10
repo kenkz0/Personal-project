@@ -251,6 +251,8 @@ export default function App() {
         }}
         onUploadKml={handleUploadKml}
         onSelectPlot={(id) => mapLogic.current?.selectPlot(id)}
+        onRenamePlot={(id, name) => mapLogic.current?.renamePlot(id, name)}
+        onDeletePlot={(id) => mapLogic.current?.deletePlot(id)}
       />
 
       <MapTools 

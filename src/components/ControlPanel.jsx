@@ -20,7 +20,9 @@ export default function ControlPanel({
   onSetCoverOptions,
   onCalculateCover,
   onUploadKml,
-  onSelectPlot
+  onSelectPlot,
+  onRenamePlot,
+  onDeletePlot
 }) {
   const fileInputRef = useRef(null);
   const [plotQuery, setPlotQuery] = useState('');
@@ -56,6 +58,13 @@ export default function ControlPanel({
       ? `Scene ${sceneDate} · scene cloud ${fmt(activeCover.selected_scene.eo_cloud_cover, 1)}% · AOI cloud ${fmt(metrics.aoi_cloud_pct, 1)}% · valid ${fmt(metrics.valid_pixel_pct, 1)}%`
       : 'Dung Microsoft Planetary Computer STAC + stackstac, clip polygon va tinh NDVI >= 0.45.'
   );
+  const handleRenamePlot = (plot) => {
+    const name = window.prompt('Tên lô rừng', plot.name);
+    if (name?.trim() && name.trim() !== plot.name) onRenamePlot?.(plot.id, name.trim());
+  };
+  const handleDeletePlot = (plot) => {
+    if (window.confirm(`Xóa ${plot.name}?`)) onDeletePlot?.(plot.id);
+  };
 
   return (
     <aside className="panel" id="controlPanel">
@@ -88,19 +97,21 @@ export default function ControlPanel({
         </div>
         <div className="plot-list">
           {filteredPlots.length ? filteredPlots.map((plot) => (
-            <button
-              type="button"
+            <div
               className={`plot-row ${plot.id === selectedPlotId ? 'active' : ''}`}
               key={plot.id}
-              onClick={() => onSelectPlot?.(plot.id)}
             >
               <span className={`plot-status ${plot.tone}`}></span>
-              <span className="plot-main">
+              <button type="button" className="plot-main" onClick={() => onSelectPlot?.(plot.id)}>
                 <strong>{plot.name}</strong>
                 <small>{plot.areaText} ha · NDVI {plot.ndvi} · mây {plot.cloud}%</small>
-              </span>
+              </button>
               <span className="plot-health">{plot.health}</span>
-            </button>
+              <span className="plot-actions">
+                <button type="button" title="Đổi tên lô" onClick={() => handleRenamePlot(plot)}>✎</button>
+                <button type="button" title="Xóa lô" onClick={() => handleDeletePlot(plot)}>×</button>
+              </span>
+            </div>
           )) : (
             <div className="plot-empty">Không tìm thấy lô phù hợp.</div>
           )}

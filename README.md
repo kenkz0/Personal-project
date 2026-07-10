@@ -62,3 +62,17 @@ API:
 
 - `GET /health`
 - `POST /api/cover`
+- `GET /api/plots`
+- `POST /api/plots`
+- `PATCH /api/plots/:id`
+- `DELETE /api/plots/:id`
+
+## PostgreSQL persistence
+
+Backend co `backend/schema.sql` cho PostgreSQL:
+
+- `users`: luu user/demo identity.
+- `forest_plots`: luu lo rung, polygon KML/GeoJSON, bounds, tam, dien tich va ket qua phan tich spectral.
+- `cover_analysis`: luu lich su tinh cover va cache theo `plot_id` + options trong TTL.
+
+Dat `DATABASE_URL` tren Render de bat database. Neu chua co `DATABASE_URL`, API cover van chay voi cache RAM nhu cu, con API `/api/plots` se bao chua cau hinh database.

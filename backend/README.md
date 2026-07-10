@@ -24,6 +24,22 @@ API mac dinh:
 
 - `GET /health`
 - `POST /api/cover`
+- `GET /api/plots`
+- `POST /api/plots`
+- `PATCH /api/plots/:id`
+- `DELETE /api/plots/:id`
+
+## PostgreSQL
+
+Dat bien moi truong `DATABASE_URL` de bat luu tru PostgreSQL. Backend se tu chay
+`schema.sql` khi start, tao cac bang:
+
+- `users`: tai khoan/demo user key.
+- `forest_plots`: lo rung, polygon GeoJSON/KML, ring, bounds, ket qua phan tich spectral.
+- `cover_analysis`: lich su va cache ket qua `POST /api/cover` theo `plot_id`, geometry va options.
+
+Frontend gui `X-User-Key` de gan du lieu voi user. Day la lop demo auth hien tai;
+khi co dang nhap that, thay header nay bang user id/JWT tu he thong auth.
 
 ## Deploy public
 
@@ -33,6 +49,7 @@ Dat bien moi truong:
 - `PORT`: cong do nha cung cap gan, thuong tu co san.
 - `HOST`: de mac dinh `0.0.0.0`.
 - `ALLOWED_ORIGINS`: domain frontend Vercel, vi du `https://personal-project.vercel.app`.
+- `DATABASE_URL`: PostgreSQL connection string tren Render/Railway/Fly.
 
 Sau khi co URL backend public, vao Vercel frontend va dat:
 

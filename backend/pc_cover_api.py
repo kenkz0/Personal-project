@@ -6,15 +6,19 @@ import math
 import os
 import time
 from collections import OrderedDict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from hashlib import sha256
+from pathlib import Path
 from threading import Lock
 from urllib.parse import urlparse
+from uuid import UUID
 
 import geopandas as gpd
 import numpy as np
 import planetary_computer
+import psycopg
+from psycopg.rows import dict_row
 import pystac_client
 import rioxarray  # noqa: F401
 import stackstac
@@ -33,6 +37,7 @@ CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "21600"))
 CACHE_MAX_ITEMS = int(os.environ.get("CACHE_MAX_ITEMS", "64"))
 CACHE: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 CACHE_LOCK = Lock()
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 CLOUD_SCL = {3, 8, 9, 10, 11}
 INVALID_SCL = {0, 1, 3, 8, 9, 10, 11}
 
@@ -45,6 +50,280 @@ YIELD_TABLES = {
 
 SOIL_FACTORS = {"basalt": 1.15, "red_yellow": 1.05, "gray": 0.95, "rocky_slope": 0.80}
 RAIN_FACTORS = {"drought": 0.80, "dry": 0.90, "normal": 1.00, "good": 1.05}
+
+
+def db_enabled() -> bool:
+    return bool(DATABASE_URL)
+
+
+def db_connect():
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+
+
+def init_db():
+    if not db_enabled():
+        return
+    schema_path = Path(__file__).with_name("schema.sql")
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            statements = [part.strip() for part in schema_path.read_text(encoding="utf-8").split(";")]
+            for statement in statements:
+                if statement:
+                    cur.execute(statement)
+        conn.commit()
+
+
+def require_user_key(handler: BaseHTTPRequestHandler) -> str:
+    user_key = handler.headers.get("X-User-Key", "").strip()
+    if not user_key:
+        raise ValueError("Missing X-User-Key header.")
+    return user_key[:160]
+
+
+def get_or_create_user(cur, external_id: str):
+    cur.execute(
+        """
+        INSERT INTO users (external_id, display_name)
+        VALUES (%s, %s)
+        ON CONFLICT (external_id) DO UPDATE
+          SET updated_at = now()
+        RETURNING id, external_id, display_name, email, created_at, updated_at
+        """,
+        (external_id, "Lâm Kính Demo User"),
+    )
+    return cur.fetchone()
+
+
+def row_to_plot(row: dict) -> dict:
+    return {
+        "id": str(row["id"]),
+        "name": row["name"],
+        "sourceName": row["source_name"],
+        "kmlText": row["kml_text"],
+        "geojson": row["geojson"],
+        "ring": row["ring"],
+        "holes": row["holes"],
+        "bounds": row["bounds"],
+        "center": row["center"],
+        "area": row["area_ha"],
+        "drawn": row["drawn"],
+        "analysis": row["analysis"],
+        "analysisItem": row["analysis_item"],
+        "createdAt": row["created_at"].isoformat() if row.get("created_at") else None,
+        "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
+def is_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def json_hash(value) -> str:
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return sha256(raw.encode("utf-8")).hexdigest()
+
+
+def cover_hashes(payload: dict) -> tuple[str, str]:
+    geometry = payload.get("geojson", {}).get("geometry", payload.get("geojson", {}))
+    options = payload.get("options", {})
+    stable_options = {
+        key: options.get(key)
+        for key in (
+            "model",
+            "age",
+            "soil",
+            "rainfall",
+            "priceVndM3",
+            "daysBack",
+            "sceneCloudMax",
+            "maxItems",
+            "epsg",
+            "resolution",
+        )
+    }
+    return json_hash(rounded_geometry(geometry)), json_hash(stable_options)
+
+
+def db_cached_cover(payload: dict, user_key: str | None):
+    if not db_enabled():
+        return None
+    plot_id = payload.get("plot_id")
+    geometry_hash, options_hash = cover_hashes(payload)
+    created_after = datetime.now(timezone.utc) - timedelta(seconds=CACHE_TTL_SECONDS)
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            user = get_or_create_user(cur, user_key or "anonymous")
+            if plot_id and is_uuid(plot_id):
+                cur.execute(
+                    """
+                    SELECT result
+                    FROM cover_analysis
+                    WHERE user_id = %s AND plot_id = %s AND options_hash = %s AND created_at >= %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (user["id"], plot_id, options_hash, created_after),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT result
+                    FROM cover_analysis
+                    WHERE user_id = %s AND geometry_hash = %s AND options_hash = %s AND created_at >= %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (user["id"], geometry_hash, options_hash, created_after),
+                )
+            row = cur.fetchone()
+        conn.commit()
+    if not row:
+        return None
+    result = json.loads(json.dumps(row["result"]))
+    result["cache"] = {"hit": True, "ttl_seconds": CACHE_TTL_SECONDS, "store": "postgres"}
+    return result
+
+
+def db_store_cover(payload: dict, result: dict, user_key: str | None):
+    if not db_enabled():
+        return
+    plot_id = payload.get("plot_id")
+    if plot_id and not is_uuid(plot_id):
+        plot_id = None
+    geometry_hash, options_hash = cover_hashes(payload)
+    selected_scene = result.get("selected_scene") or {}
+    scene_datetime = selected_scene.get("datetime")
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            user = get_or_create_user(cur, user_key or "anonymous")
+            cur.execute(
+                """
+                INSERT INTO cover_analysis (
+                  user_id, plot_id, geometry_hash, options_hash, options, result,
+                  source, selected_scene_id, selected_scene_datetime
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user["id"],
+                    plot_id,
+                    geometry_hash,
+                    options_hash,
+                    json.dumps(payload.get("options", {})),
+                    json.dumps(result, ensure_ascii=False),
+                    result.get("source"),
+                    selected_scene.get("item_id"),
+                    scene_datetime,
+                ),
+            )
+        conn.commit()
+
+
+def list_plots(user_key: str) -> list[dict]:
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            user = get_or_create_user(cur, user_key)
+            cur.execute(
+                """
+                SELECT *
+                FROM forest_plots
+                WHERE user_id = %s
+                ORDER BY updated_at DESC
+                """,
+                (user["id"],),
+            )
+            rows = cur.fetchall()
+        conn.commit()
+    return [row_to_plot(row) for row in rows]
+
+
+def create_plot(user_key: str, payload: dict) -> dict:
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            user = get_or_create_user(cur, user_key)
+            cur.execute(
+                """
+                INSERT INTO forest_plots (
+                  user_id, name, source_name, kml_text, geojson, ring, holes, bounds,
+                  center, area_ha, drawn, analysis, analysis_item
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
+                """,
+                (
+                    user["id"],
+                    payload.get("name") or "Lô rừng",
+                    payload.get("sourceName") or "Polygon KML",
+                    payload.get("kmlText"),
+                    json.dumps(payload["geojson"], ensure_ascii=False),
+                    json.dumps(payload["ring"], ensure_ascii=False),
+                    json.dumps(payload.get("holes", []), ensure_ascii=False),
+                    json.dumps(payload["bounds"], ensure_ascii=False),
+                    json.dumps(payload["center"], ensure_ascii=False),
+                    float(payload.get("area", 0)),
+                    bool(payload.get("drawn", False)),
+                    json.dumps(payload["analysis"], ensure_ascii=False) if payload.get("analysis") is not None else None,
+                    json.dumps(payload["analysisItem"], ensure_ascii=False) if payload.get("analysisItem") is not None else None,
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return row_to_plot(row)
+
+
+def update_plot(user_key: str, plot_id: str, payload: dict) -> dict | None:
+    allowed = {
+        "name": "name",
+        "sourceName": "source_name",
+        "analysis": "analysis",
+        "analysisItem": "analysis_item",
+    }
+    assignments = []
+    values = []
+    for key, column in allowed.items():
+        if key not in payload:
+            continue
+        assignments.append(f"{column} = %s")
+        if key in {"analysis", "analysisItem"}:
+            values.append(json.dumps(payload[key], ensure_ascii=False) if payload[key] is not None else None)
+        else:
+            values.append(payload[key])
+    if not assignments:
+        return None
+    values.append(plot_id)
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            user = get_or_create_user(cur, user_key)
+            values.append(user["id"])
+            cur.execute(
+                f"""
+                UPDATE forest_plots
+                SET {", ".join(assignments)}, updated_at = now()
+                WHERE id = %s AND user_id = %s
+                RETURNING *
+                """,
+                values,
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return row_to_plot(row) if row else None
+
+
+def delete_plot(user_key: str, plot_id: str) -> bool:
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            user = get_or_create_user(cur, user_key)
+            cur.execute(
+                "DELETE FROM forest_plots WHERE id = %s AND user_id = %s RETURNING id",
+                (plot_id, user["id"]),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return bool(row)
 
 
 def ndvi_factor(ndvi: float) -> tuple[float, str]:
@@ -323,43 +602,104 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", self._cors_origin())
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, ngrok-skip-browser-warning")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-User-Key, ngrok-skip-browser-warning")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.end_headers()
+
+    def _json(self, data, status=200):
+        self._headers(status)
+        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
+    def _read_json(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0:
+            return {}
+        return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def _db_required(self):
+        if db_enabled():
+            return False
+        self._json({"error": "DATABASE_URL is not configured."}, 503)
+        return True
 
     def do_OPTIONS(self):
         self._headers(204)
 
     def do_GET(self):
-        if urlparse(self.path).path == "/health":
-            self._headers()
-            self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+        path = urlparse(self.path).path
+        if path == "/health":
+            self._json({"ok": True, "database": db_enabled()})
             return
-        self._headers(404)
-        self.wfile.write(json.dumps({"error": "not found"}).encode("utf-8"))
+        if path == "/api/plots":
+            if self._db_required():
+                return
+            try:
+                self._json({"plots": list_plots(require_user_key(self))})
+            except Exception as exc:  # noqa: BLE001
+                self._json({"error": str(exc)}, 500)
+            return
+        self._json({"error": "not found"}, 404)
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/cover":
-            self._headers(404)
-            self.wfile.write(json.dumps({"error": "not found"}).encode("utf-8"))
-            return
+        path = urlparse(self.path).path
         try:
-            length = int(self.headers.get("Content-Length", 0))
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = self._read_json()
+            if path == "/api/plots":
+                if self._db_required():
+                    return
+                self._json({"plot": create_plot(require_user_key(self), payload)}, 201)
+                return
+            if path != "/api/cover":
+                self._json({"error": "not found"}, 404)
+                return
+            user_key = self.headers.get("X-User-Key", "").strip() or None
             key = cache_key(payload)
-            result = cache_get(key)
+            result = db_cached_cover(payload, user_key) or cache_get(key)
             if result is None:
                 result = calculate(payload)
                 cache_set(key, result)
-            self._headers()
-            self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+                db_store_cover(payload, result, user_key)
+            self._json(result)
         except Exception as exc:  # noqa: BLE001
-            self._headers(500)
-            self.wfile.write(json.dumps({"error": str(exc)}, ensure_ascii=False).encode("utf-8"))
+            self._json({"error": str(exc)}, 500)
+
+    def do_PATCH(self):
+        path = urlparse(self.path).path
+        parts = path.strip("/").split("/")
+        if len(parts) != 3 or parts[:2] != ["api", "plots"]:
+            self._json({"error": "not found"}, 404)
+            return
+        if self._db_required():
+            return
+        try:
+            row = update_plot(require_user_key(self), parts[2], self._read_json())
+            if not row:
+                self._json({"error": "plot not found"}, 404)
+                return
+            self._json({"plot": row})
+        except Exception as exc:  # noqa: BLE001
+            self._json({"error": str(exc)}, 500)
+
+    def do_DELETE(self):
+        path = urlparse(self.path).path
+        parts = path.strip("/").split("/")
+        if len(parts) != 3 or parts[:2] != ["api", "plots"]:
+            self._json({"error": "not found"}, 404)
+            return
+        if self._db_required():
+            return
+        try:
+            if not delete_plot(require_user_key(self), parts[2]):
+                self._json({"error": "plot not found"}, 404)
+                return
+            self._json({"ok": True})
+        except Exception as exc:  # noqa: BLE001
+            self._json({"error": str(exc)}, 500)
 
 
 def main():
+    init_db()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"PC cover API listening on http://{HOST}:{PORT}")
     server.serve_forever()

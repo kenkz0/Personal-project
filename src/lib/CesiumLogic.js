@@ -4,6 +4,29 @@ export function initCesiumMap(containerId, callbacks) {
     : "https://personal-project-w5dk.onrender.com";
   const COVER_API_BASE = (import.meta.env.VITE_COVER_API_URL || DEFAULT_COVER_API_BASE).replace(/\/+$/, "");
   const coverApiUrl = (path) => `${COVER_API_BASE}${path}`;
+  const USER_KEY_STORAGE = "lam-kinh-user-key";
+  function getUserKey() {
+    let key = localStorage.getItem(USER_KEY_STORAGE);
+    if (!key) {
+      key = `demo-${crypto.randomUUID?.() || Date.now()}`;
+      localStorage.setItem(USER_KEY_STORAGE, key);
+    }
+    return key;
+  }
+  async function appApi(path, options = {}) {
+    const response = await fetch(coverApiUrl(path), {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        "X-User-Key": getUserKey(),
+        "ngrok-skip-browser-warning": "true",
+        ...(options.headers || {})
+      }
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || `API HTTP ${response.status}`);
+    return body;
+  }
   const $ = () => ({
     get value() { return ""; }, set value(v) {},
     get textContent() { return ""; }, set textContent(v) {},
@@ -206,6 +229,23 @@ export function initCesiumMap(containerId, callbacks) {
       south: Math.min(bounds.south, point.lat),
       north: Math.max(bounds.north, point.lat)
     }), { west: Infinity, east: -Infinity, south: Infinity, north: -Infinity });
+  }
+
+  function refreshDataRectangle() {
+    if (!plots.length) {
+      dataRectangle = null;
+      return;
+    }
+    const allBounds = plots.reduce((bounds, plot) => ({
+      west: Math.min(bounds.west, plot.bounds.west), east: Math.max(bounds.east, plot.bounds.east),
+      south: Math.min(bounds.south, plot.bounds.south), north: Math.max(bounds.north, plot.bounds.north)
+    }), { west: Infinity, east: -Infinity, south: Infinity, north: -Infinity });
+    const lonPadding = Math.max((allBounds.east - allBounds.west) * 0.28, 0.002);
+    const latPadding = Math.max((allBounds.north - allBounds.south) * 0.28, 0.002);
+    dataRectangle = Cesium.Rectangle.fromDegrees(
+      allBounds.west - lonPadding, allBounds.south - latPadding,
+      allBounds.east + lonPadding, allBounds.north + latPadding
+    );
   }
 
   function centroidOf(ring) {
@@ -464,6 +504,7 @@ export function initCesiumMap(containerId, callbacks) {
     rebuildForest();
     renderSearchResults();
     updateCard(plot);
+    savePlot(plot);
     ensurePlotAnalysis(plot)
       .catch((error) => {
         plot.analysis = { error: `Không có ảnh cho vùng vẽ: ${error.message}` };
@@ -566,6 +607,40 @@ export function initCesiumMap(containerId, callbacks) {
     viewer.camera.flyTo({ destination: paddedRectangleForPlot(plot, PLOT_FOCUS_PADDING), duration: 1.1 });
   }
 
+  async function renamePlot(plotId, name) {
+    const plot = plots.find((item) => item.id === plotId);
+    const cleanName = name?.trim();
+    if (!plot || !cleanName) return;
+    plot.name = cleanName;
+    updatePlotSummary();
+    if (selectedPlot?.id === plot.id) updateCard(plot, false);
+    await savePlot(plot);
+  }
+
+  async function deletePlot(plotId) {
+    const index = plots.findIndex((item) => item.id === plotId);
+    if (index < 0) return;
+    const [plot] = plots.splice(index, 1);
+    removeEntitiesForPlot(boundarySource, plot.id);
+    removeEntitiesForPlot(forestSource, plot.id);
+    refreshDataRectangle();
+    updatePlotSummary();
+    rebuildForest();
+    renderSearchResults();
+    if (selectedPlot?.id === plot.id) {
+      selectedPlot = plots[0] || null;
+      if (selectedPlot) updateCard(selectedPlot);
+      else callbacks.onCardOpen(false);
+    }
+    if (plot.persisted && /^[0-9a-f-]{36}$/i.test(plot.id)) {
+      try {
+        await appApi(`/api/plots/${plot.id}`, { method: "DELETE" });
+      } catch (error) {
+        console.warn("Không thể xóa lô trong PostgreSQL:", error);
+      }
+    }
+  }
+
   function flyToAll(duration = 1.6) {
     if (!dataRectangle) return;
     viewer.camera.flyTo({ destination: dataRectangle, duration });
@@ -603,6 +678,79 @@ export function initCesiumMap(containerId, callbacks) {
         coordinates: [closeRing(plot.ring), ...plot.holes.filter((hole) => hole.length >= 3).map(closeRing)]
       }
     };
+  }
+
+  function serializePlot(plot, kmlText = plot.kmlText || null) {
+    return {
+      name: plot.name,
+      sourceName: plot.sourceName,
+      kmlText,
+      geojson: plotAsGeoJson(plot),
+      ring: plot.ring,
+      holes: plot.holes || [],
+      bounds: plot.bounds,
+      center: plot.center,
+      area: plot.area,
+      drawn: Boolean(plot.drawn),
+      analysis: plot.analysis || null,
+      analysisItem: plot.analysisItem || null
+    };
+  }
+
+  function hydratePlot(saved) {
+    return {
+      id: saved.id,
+      name: saved.name || "Lô rừng",
+      sourceName: saved.sourceName || saved.source_name || "Polygon KML",
+      kmlText: saved.kmlText || null,
+      ring: saved.ring || [],
+      holes: saved.holes || [],
+      bounds: saved.bounds,
+      center: saved.center,
+      area: Number(saved.area ?? saved.area_ha ?? 0),
+      drawn: Boolean(saved.drawn),
+      analysis: saved.analysis || null,
+      analysisItem: saved.analysisItem || null,
+      persisted: true
+    };
+  }
+
+  async function savePlot(plot, kmlText = null) {
+    try {
+      const body = serializePlot(plot, kmlText);
+      if (plot.persisted && /^[0-9a-f-]{36}$/i.test(plot.id)) {
+        const { plot: saved } = await appApi(`/api/plots/${plot.id}`, {
+          method: "PATCH",
+          body: JSON.stringify(body)
+        });
+        Object.assign(plot, hydratePlot(saved));
+        return plot;
+      }
+      const previousId = plot.id;
+      const { plot: saved } = await appApi("/api/plots", {
+        method: "POST",
+        body: JSON.stringify(body)
+      });
+      Object.assign(plot, hydratePlot(saved));
+      if (plot.id !== previousId) {
+        boundarySource.entities.removeAll();
+        plots.forEach(addPlotBoundary);
+        rebuildForest();
+      }
+      emitPlotPortfolio();
+      return plot;
+    } catch (error) {
+      console.warn("Không thể lưu lô vào PostgreSQL:", error);
+      return plot;
+    }
+  }
+
+  function removeEntitiesForPlot(source, plotId) {
+    const entities = source.entities.values.filter((entity) => {
+      const id = entity.properties?.plotId?.getValue?.() || entity.id;
+      return id === plotId;
+    });
+    entities.forEach((entity) => source.entities.remove(entity));
   }
 
   async function fetchWithRetry(url, options, attempts = 2) {
@@ -734,6 +882,7 @@ export function initCesiumMap(containerId, callbacks) {
     }
     if (selectedPlot?.id === plot.id) updateAnalysisPanel(plot);
     emitPlotPortfolio();
+    savePlot(plot);
   }
 
   function spectralTileUrl(item, mode) {
@@ -923,24 +1072,39 @@ export function initCesiumMap(containerId, callbacks) {
     $("#searchResults").classList.toggle("open", matches.length > 0 && document.activeElement === $("#regionSearch"));
   }
 
+  async function loadSavedPlots() {
+    try {
+      const { plots: savedPlots = [] } = await appApi("/api/plots");
+      const hydrated = savedPlots.map(hydratePlot).filter((plot) => plot.ring.length >= 3);
+      if (!hydrated.length) return false;
+      plots.push(...hydrated);
+      plots.forEach(addPlotBoundary);
+      refreshDataRectangle();
+      updatePlotSummary();
+      callbacks.onCameraCoordsChange(`${plots[0].center.lat.toFixed(4)}°N · ${plots[0].center.lon.toFixed(4)}°E`);
+      rebuildForest();
+      renderSearchResults();
+      updateCard(plots[0], false);
+      flyToAll(0);
+      callbacks.onSpectralStatusChange("Đã tải danh mục lô từ PostgreSQL.");
+      setTimeout(() => callbacks.onLoading(false), 500);
+      return true;
+    } catch (error) {
+      console.warn("Không thể tải danh mục lô từ PostgreSQL:", error);
+      return false;
+    }
+  }
+
   async function loadKml() {
     try {
+      if (await loadSavedPlots()) return;
       const response = await fetch(KML_URL);
       if (!response.ok) throw new Error(`Không tải được KML (${response.status}).`);
       const parsedPlots = parseKml(await response.text());
       if (!parsedPlots.length) throw new Error("KML không chứa polygon nào.");
       plots.push(...parsedPlots);
       plots.forEach(addPlotBoundary);
-      const allBounds = plots.reduce((bounds, plot) => ({
-        west: Math.min(bounds.west, plot.bounds.west), east: Math.max(bounds.east, plot.bounds.east),
-        south: Math.min(bounds.south, plot.bounds.south), north: Math.max(bounds.north, plot.bounds.north)
-      }), { west: Infinity, east: -Infinity, south: Infinity, north: -Infinity });
-      const lonPadding = Math.max((allBounds.east - allBounds.west) * 0.28, 0.002);
-      const latPadding = Math.max((allBounds.north - allBounds.south) * 0.28, 0.002);
-      dataRectangle = Cesium.Rectangle.fromDegrees(
-        allBounds.west - lonPadding, allBounds.south - latPadding,
-        allBounds.east + lonPadding, allBounds.north + latPadding
-      );
+      refreshDataRectangle();
       updatePlotSummary();
       callbacks.onCameraCoordsChange(`${plots[0].center.lat.toFixed(4)}°N · ${plots[0].center.lon.toFixed(4)}°E`);
       rebuildForest();
@@ -970,18 +1134,8 @@ export function initCesiumMap(containerId, callbacks) {
 
       plots.push(...addedPlots);
       addedPlots.forEach(addPlotBoundary);
-      
-      const allBounds = plots.reduce((bounds, plot) => ({
-        west: Math.min(bounds.west, plot.bounds.west), east: Math.max(bounds.east, plot.bounds.east),
-        south: Math.min(bounds.south, plot.bounds.south), north: Math.max(bounds.north, plot.bounds.north)
-      }), { west: Infinity, east: -Infinity, south: Infinity, north: -Infinity });
-      
-      const lonPadding = Math.max((allBounds.east - allBounds.west) * 0.28, 0.002);
-      const latPadding = Math.max((allBounds.north - allBounds.south) * 0.28, 0.002);
-      dataRectangle = Cesium.Rectangle.fromDegrees(
-        allBounds.west - lonPadding, allBounds.south - latPadding,
-        allBounds.east + lonPadding, allBounds.north + latPadding
-      );
+      await Promise.all(addedPlots.map((plot) => savePlot(plot, kmlText)));
+      refreshDataRectangle();
       
       updatePlotSummary();
       callbacks.onCameraCoordsChange(`${addedPlots[0].center.lat.toFixed(4)}°N · ${addedPlots[0].center.lon.toFixed(4)}°E`);
@@ -1055,9 +1209,10 @@ export function initCesiumMap(containerId, callbacks) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "X-User-Key": getUserKey(),
         "ngrok-skip-browser-warning": "true"
       },
-      body: JSON.stringify({ geojson: plotAsGeoJson(plot), options })
+      body: JSON.stringify({ plot_id: plot.persisted ? plot.id : undefined, geojson: plotAsGeoJson(plot), options })
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || `Cover API HTTP ${response.status}`);
@@ -1205,5 +1360,5 @@ export function initCesiumMap(containerId, callbacks) {
     return captures;
   }
 
-  return { loadCustomKml, setDensity, toggleDrawing, flyToAll, flyToSelectedPlot, zoomIn, zoomOut, toggleReference, toggleSatellite, setSpectralMode, toggleForest, toggleZone, toggle2D, selectPlot, calculateCoverAndValue, exportMap, getMapSnapshot, getReportSnapshots, destroy };
+  return { loadCustomKml, setDensity, toggleDrawing, flyToAll, flyToSelectedPlot, zoomIn, zoomOut, toggleReference, toggleSatellite, setSpectralMode, toggleForest, toggleZone, toggle2D, selectPlot, renamePlot, deletePlot, calculateCoverAndValue, exportMap, getMapSnapshot, getReportSnapshots, destroy };
 }
