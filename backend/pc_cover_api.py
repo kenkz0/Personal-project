@@ -38,6 +38,7 @@ CACHE_MAX_ITEMS = int(os.environ.get("CACHE_MAX_ITEMS", "64"))
 CACHE: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 CACHE_LOCK = Lock()
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+DB_INIT_ERROR = ""
 CLOUD_SCL = {3, 8, 9, 10, 11}
 INVALID_SCL = {0, 1, 3, 8, 9, 10, 11}
 
@@ -57,20 +58,26 @@ def db_enabled() -> bool:
 
 
 def db_connect():
-    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=8)
 
 
 def init_db():
+    global DB_INIT_ERROR
+    DB_INIT_ERROR = ""
     if not db_enabled():
         return
-    schema_path = Path(__file__).with_name("schema.sql")
-    with db_connect() as conn:
-        with conn.cursor() as cur:
-            statements = [part.strip() for part in schema_path.read_text(encoding="utf-8").split(";")]
-            for statement in statements:
-                if statement:
-                    cur.execute(statement)
-        conn.commit()
+    try:
+        schema_path = Path(__file__).with_name("schema.sql")
+        with db_connect() as conn:
+            with conn.cursor() as cur:
+                statements = [part.strip() for part in schema_path.read_text(encoding="utf-8").split(";")]
+                for statement in statements:
+                    if statement:
+                        cur.execute(statement)
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        DB_INIT_ERROR = str(exc)
+        print(f"PostgreSQL init failed: {DB_INIT_ERROR}", flush=True)
 
 
 def require_user_key(handler: BaseHTTPRequestHandler) -> str:
@@ -629,7 +636,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/health":
-            self._json({"ok": True, "database": db_enabled()})
+            data = {"ok": True, "database": db_enabled()}
+            if DB_INIT_ERROR:
+                data["database_error"] = DB_INIT_ERROR
+            self._json(data)
             return
         if path == "/api/plots":
             if self._db_required():
