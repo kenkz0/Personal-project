@@ -14,15 +14,26 @@ export function initCesiumMap(containerId, callbacks) {
     return key;
   }
   async function appApi(path, options = {}) {
-    const response = await fetch(coverApiUrl(path), {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        "X-User-Key": getUserKey(),
-        "ngrok-skip-browser-warning": "true",
-        ...(options.headers || {})
-      }
-    });
+    const { timeoutMs = 12000, ...fetchOptions } = options;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    try {
+      response = await fetch(coverApiUrl(path), {
+        ...fetchOptions,
+        signal: fetchOptions.signal || controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          "X-User-Key": getUserKey(),
+          "ngrok-skip-browser-warning": "true",
+          ...(fetchOptions.headers || {})
+        }
+      });
+    } catch (error) {
+      throw new Error(error.name === "AbortError" ? "Backend đang khởi động chậm." : error.message);
+    } finally {
+      clearTimeout(timeout);
+    }
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || `API HTTP ${response.status}`);
     return body;
@@ -1072,22 +1083,36 @@ export function initCesiumMap(containerId, callbacks) {
     $("#searchResults").classList.toggle("open", matches.length > 0 && document.activeElement === $("#regionSearch"));
   }
 
-  async function loadSavedPlots() {
+  function showPlots(nextPlots, { analyze = false, fly = true, statusText = "" } = {}) {
+    boundarySource.entities.removeAll();
+    forestSource.entities.removeAll();
+    indexOverlaySource.entities.removeAll();
+    if (spectralLayer) spectralLayer.show = false;
+    activeSpectralPlot = null;
+    selectedPlot = null;
+    plots.splice(0, plots.length, ...nextPlots);
+    plots.forEach(addPlotBoundary);
+    refreshDataRectangle();
+    updatePlotSummary();
+    callbacks.onCameraCoordsChange(`${plots[0].center.lat.toFixed(4)}°N · ${plots[0].center.lon.toFixed(4)}°E`);
+    rebuildForest();
+    renderSearchResults();
+    updateCard(plots[0], analyze);
+    if (fly) flyToAll(0);
+    if (statusText) callbacks.onSpectralStatusChange(statusText);
+  }
+
+  async function loadSavedPlots({ timeoutMs = 12000, replaceCurrent = false } = {}) {
     try {
-      const { plots: savedPlots = [] } = await appApi("/api/plots");
+      const { plots: savedPlots = [] } = await appApi("/api/plots", { timeoutMs });
       const hydrated = savedPlots.map(hydratePlot).filter((plot) => plot.ring.length >= 3);
       if (!hydrated.length) return false;
-      plots.push(...hydrated);
-      plots.forEach(addPlotBoundary);
-      refreshDataRectangle();
-      updatePlotSummary();
-      callbacks.onCameraCoordsChange(`${plots[0].center.lat.toFixed(4)}°N · ${plots[0].center.lon.toFixed(4)}°E`);
-      rebuildForest();
-      renderSearchResults();
-      updateCard(plots[0], false);
-      flyToAll(0);
-      callbacks.onSpectralStatusChange("Đã tải danh mục lô từ PostgreSQL.");
-      setTimeout(() => callbacks.onLoading(false), 500);
+      showPlots(hydrated, {
+        analyze: false,
+        fly: !replaceCurrent,
+        statusText: "Đã tải danh mục lô từ PostgreSQL."
+      });
+      if (!replaceCurrent) setTimeout(() => callbacks.onLoading(false), 500);
       return true;
     } catch (error) {
       console.warn("Không thể tải danh mục lô từ PostgreSQL:", error);
@@ -1095,24 +1120,24 @@ export function initCesiumMap(containerId, callbacks) {
     }
   }
 
+  async function loadDefaultKml() {
+    const response = await fetch(KML_URL);
+    if (!response.ok) throw new Error(`Không tải được KML (${response.status}).`);
+    const parsedPlots = parseKml(await response.text());
+    if (!parsedPlots.length) throw new Error("KML không chứa polygon nào.");
+    showPlots(parsedPlots, {
+      analyze: true,
+      fly: true,
+      statusText: "Đang tải Sentinel-2 L2A..."
+    });
+    setTimeout(() => callbacks.onLoading(false), 500);
+  }
+
   async function loadKml() {
     try {
-      if (await loadSavedPlots()) return;
-      const response = await fetch(KML_URL);
-      if (!response.ok) throw new Error(`Không tải được KML (${response.status}).`);
-      const parsedPlots = parseKml(await response.text());
-      if (!parsedPlots.length) throw new Error("KML không chứa polygon nào.");
-      plots.push(...parsedPlots);
-      plots.forEach(addPlotBoundary);
-      refreshDataRectangle();
-      updatePlotSummary();
-      callbacks.onCameraCoordsChange(`${plots[0].center.lat.toFixed(4)}°N · ${plots[0].center.lon.toFixed(4)}°E`);
-      rebuildForest();
-      renderSearchResults();
-      updateCard(plots[0]);
-      flyToAll(0);
-      callbacks.onSpectralStatusChange("Đang tải Sentinel-2 L2A...");
-      setTimeout(() => callbacks.onLoading(false), 500);
+      if (await loadSavedPlots({ timeoutMs: 4500 })) return;
+      await loadDefaultKml();
+      loadSavedPlots({ timeoutMs: 60000, replaceCurrent: true });
     } catch (error) {
       callbacks.onLoadingError(error.message);
       
