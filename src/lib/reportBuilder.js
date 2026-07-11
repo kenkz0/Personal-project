@@ -49,6 +49,7 @@ function subtractYears(dateText, years) {
 function filledForm(context, form = {}) {
   const opt = context.coverOptions || {};
   const cover = context.cover?.metrics || {};
+  const valuation = context.cover?.valuation || {};
   const area = finiteNumber(context.card.area || context.stats.totalArea) || 67.73;
   const model = opt.model || 'timber8';
   const cycle = finiteNumber(form.cycle) || MODEL_CYCLE[model] || 4;
@@ -62,9 +63,15 @@ function filledForm(context, form = {}) {
   const p10Volume = treeArea * yieldRow.p10 * factor;
   const p50Volume = treeArea * yieldRow.p50 * factor;
   const p90Volume = treeArea * yieldRow.p90 * factor;
-  const volume = finiteNumber(form.volume) || p50Volume;
-  const woodPrice = finiteNumber(form.woodPrice) || finiteNumber(opt.priceVndM3) || 900000;
-  const assetValue = finiteNumber(form.assetValue) || volume * woodPrice;
+  const backendP10Volume = finiteNumber(valuation.p10_m3);
+  const backendP50Volume = finiteNumber(valuation.p50_m3);
+  const backendP90Volume = finiteNumber(valuation.p90_m3);
+  const backendP10Value = finiteNumber(valuation.p10_value_vnd);
+  const backendP50Value = finiteNumber(valuation.p50_value_vnd);
+  const backendP90Value = finiteNumber(valuation.p90_value_vnd);
+  const volume = finiteNumber(form.volume) || backendP50Volume || p50Volume;
+  const woodPrice = finiteNumber(form.woodPrice) || finiteNumber(valuation.price_vnd_m3) || finiteNumber(opt.priceVndM3) || 900000;
+  const assetValue = finiteNumber(form.assetValue) || backendP50Value || volume * woodPrice;
   const careBase = Math.max(treeArea * 450000, assetValue * 0.009);
   const reportYear = new Date(has(form.date) ? form.date : new Date()).getFullYear();
   const harvestYear = reportYear + Math.max(0, cycle - age);
@@ -104,12 +111,12 @@ function filledForm(context, form = {}) {
     volume: String(Math.round(volume)),
     woodPrice: String(Math.round(woodPrice)),
     assetValue: String(Math.round(assetValue)),
-    p10Volume: String(Math.round(p10Volume)),
+    p10Volume: String(Math.round(backendP10Volume || p10Volume)),
     p50Volume: String(Math.round(volume)),
-    p90Volume: String(Math.round(p90Volume)),
-    p10Value: String(Math.round(p10Volume * woodPrice)),
+    p90Volume: String(Math.round(backendP90Volume || p90Volume)),
+    p10Value: String(Math.round(backendP10Value || p10Volume * woodPrice)),
     p50Value: String(Math.round(assetValue)),
-    p90Value: String(Math.round(p90Volume * woodPrice)),
+    p90Value: String(Math.round(backendP90Value || p90Volume * woodPrice)),
     yieldPerHa: String(Math.round(volume / Math.max(treeArea, 0.01))),
     cashflowYear1: String(Math.round(careBase * 1.2)),
     cashflowYear2: String(Math.round(careBase)),
@@ -162,7 +169,7 @@ const visualItems = (c, gciNote = 'Dễ nhận diện vùng tán lá khác biệ
 const visualGrid = (items, layout) => `<div class="visual-grid ${layout}">${items.map(([src, label, note]) => visual(src, label, note)).join('')}</div>`;
 const visualNotice = (text) => `<div class="notice">${text}</div>`;
 const cycleSummary = (x) => x.cycle ? `Cây hiện ${x.age} năm tuổi trong chu kỳ ${x.cycle} năm; còn khoảng ${x.harvestCountdown} năm đến khai thác${x.harvestCountdown === 0 ? ' / đã tới chu kỳ' : ''}` : 'Chưa đủ dữ liệu chu kỳ';
-const valuationNote = (f, x) => `Giá trị hiện tại là ước tính tham khảo theo sản lượng P50 (${Number(f.p50Volume || x.volume || 0).toLocaleString('vi-VN')} m³), giá gỗ ${Number(f.woodPrice || 0).toLocaleString('vi-VN')} VNĐ/m³, hệ số đất/mưa/NDVI và hao hụt kỹ thuật 8%. Nếu so với bản cũ thấp hơn, nguyên nhân là mô hình hiện tại chỉ tính phần có cây/độ che phủ và đã áp dụng hệ số hao hụt; chưa phải định giá chính thức.`;
+const valuationNote = (f, x) => `Giá trị hiện tại là ước tính tham khảo theo sản lượng P50 (${Number(f.p50Volume || x.volume || 0).toLocaleString('vi-VN')} m³), giá gỗ ${Number(f.woodPrice || 0).toLocaleString('vi-VN')} VNĐ/m³ và hệ số đất/mưa/NDVI từ màn hình tính độ che phủ. Các giả định định giá mặc định đồng bộ với kết quả ngoài trang chủ; khách hàng có thể điều chỉnh lại khi có số liệu thực địa.`;
 const QrCodeBox = ({ c }) => {
   const url = c.reportUrl || (typeof window !== 'undefined' ? window.location.origin : '');
   const isLocal = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?/i.test(url);
@@ -272,7 +279,7 @@ const AssetEstimation = ({ c, f, x, pageNum }) => {
       ${row('Sản lượng dự kiến', has(x.volume) ? `${Number(x.volume).toLocaleString('vi-VN', { maximumFractionDigits: 0 })} m³` : val())}
       ${row('Giá gỗ tham chiếu', has(f.woodPrice) ? `${money(f.woodPrice)} / m³` : val())}
       ${row('Giá trị cây đứng ước tính', money(x.gross))}
-      ${row('Giá trị hiện tại sau hệ số hao hụt', money(x.net))}
+      ${row('Giá trị hiện tại ước tính', money(x.net))}
       ${row('Chu kỳ / khai thác', esc(cycleSummary(x)))}
       ${row('Năm khai thác dự kiến', x.harvestYear)}
     </table>
@@ -306,7 +313,7 @@ const Disclaimer = ({ c, f, x, pageNum }) => {
     <div class="kpis">
       <div class="kpi"><span>Diện tích</span><strong>${Number.isFinite(x.area) ? x.area.toLocaleString('vi-VN') : '—'}</strong><small>hecta</small></div>
       <div class="kpi"><span>Sức khỏe</span><strong>${Number.isFinite(x.score) ? `${x.score}%` : '—'}</strong><small>Chỉ số thực vật chuẩn hóa</small></div>
-      <div class="kpi"><span>Giá trị ước tính</span><strong style="font-size:12px">${money(x.net)}</strong><small>đã tính hao hụt</small></div>
+      <div class="kpi"><span>Giá trị ước tính</span><strong style="font-size:12px">${money(x.net)}</strong><small>theo P50</small></div>
     </div>
     <ul class="bullets">
       <li>Ranh giới được tổng hợp từ tệp ranh giới người dùng.</li>
@@ -339,7 +346,7 @@ const CollateralDashboard = ({ c, f, x, pageNum }) => {
       <div class="kpi"><span>Năm khai thác</span><strong>${x.harvestYear}</strong><small>dự kiến theo ngày trồng</small></div>
       <div class="kpi"><span>Pháp lý</span><strong>Cần bổ sung</strong><small>không thay thế thẩm định</small></div>
     </div>
-    <div class="notice">Các chỉ tiêu tín dụng là mô hình tham khảo để ngân hàng sàng lọc hồ sơ. Giá trị đã tính hao hụt kỹ thuật, nhưng khi thẩm định thật vẫn cần bổ sung pháp lý, khảo sát thực địa và chứng thư định giá.</div>
+    <div class="notice">Các chỉ tiêu tín dụng là mô hình tham khảo để ngân hàng sàng lọc hồ sơ. Giá trị mặc định đồng bộ với kết quả ước tính P50 ngoài trang chủ; khi thẩm định thật vẫn cần bổ sung pháp lý, khảo sát thực địa và chứng thư định giá.</div>
   `);
 };
 
@@ -398,7 +405,7 @@ const ValuationSection = ({ c, f, x, pageNum }) => {
       ${row('Sản lượng ước tính', has(f.p50Volume) ? `${Number(f.p50Volume).toLocaleString('vi-VN')} m³` : val())}
       ${row('Giá gỗ tham chiếu', has(f.woodPrice) ? `${money(f.woodPrice)} / m³` : val())}
       ${row('Giá trị cây đứng ước tính', money(f.p50Value))}
-      ${row('Giá trị hiện tại sau hệ số hao hụt', money(x.net))}
+      ${row('Giá trị hiện tại ước tính', money(x.net))}
       ${row('Chu kỳ / khai thác', esc(cycleSummary(x)))}
       ${row('Ghi chú mô hình', esc(valuationNote(f, x)))}
     </table>
@@ -484,7 +491,7 @@ const InvestmentDashboard = ({ c, f, x, pageNum }) => {
   const healthLabel = Number.isFinite(x.score) && x.score >= 70 ? 'Tốt' : Number.isFinite(x.score) && x.score >= 55 ? 'Trung bình' : 'Cần xác minh';
   return corpPage(f, pageNum, 'Tóm tắt đầu tư', 'Tóm tắt đầu tư', `
     <div class="corp-grid two">
-      <div class="corp-card tint"><span>Giá trị hiện tại ước tính</span><strong>${compactMoney(asset)}</strong><p>Giá trị tài sản đã tính hao hụt kỹ thuật, chưa phải chứng thư định giá.</p></div>
+      <div class="corp-card tint"><span>Giá trị hiện tại ước tính</span><strong>${compactMoney(asset)}</strong><p>Giá trị tài sản theo P50 từ mô hình độ che phủ, chưa phải chứng thư định giá.</p></div>
       <div class="corp-card tint"><span>Điểm hấp dẫn</span><strong>${healthLabel}</strong><p>Dựa trên điểm sức khỏe và độ che phủ thực tế.</p></div>
     </div>
     ${corpRows([['Tỷ suất hoàn vốn nội bộ (IRR) dự kiến', val(f.targetReturn || '18.7%')], ['Thời gian thu hồi vốn', val(f.payback || '5.2 năm')], ['Giá trị hiện tại ròng (NPV) tham khảo', compactMoney(npv)], ['Nguồn ảnh', 'Ảnh vệ tinh Sentinel-2 + tệp ranh giới (KML)'], ['Ghi chú', 'Cần xác minh pháp lý và khảo sát thực địa trước quyết định đầu tư.']])}
@@ -547,7 +554,7 @@ const InvestorHealth = ({ c, f, x, pageNum }) => {
 
 const FinancialProjection = ({ c, f, x, pageNum }) => {
   return corpPage(f, pageNum, 'Ước tính sản lượng & giá trị', 'Ước tính sản lượng & Giá trị', 
-    corpRows([['Diện tích có cây', has(x.cover.tree_area_ha) ? `${Number(x.cover.tree_area_ha).toLocaleString('vi-VN', { maximumFractionDigits: 2 })} ha` : val()], ['Năng suất ước tính', has(f.yieldPerHa) ? `${Number(f.yieldPerHa).toLocaleString('vi-VN')} m³/ha` : val()], ['Sản lượng ước tính', has(f.p50Volume) ? `${Number(f.p50Volume).toLocaleString('vi-VN')} m³` : val()], ['Giá gỗ tham chiếu', has(f.woodPrice) ? `${money(f.woodPrice)} / m³` : val()], ['Giá trị cây đứng ước tính', money(f.p50Value)], ['Giá trị hiện tại sau hệ số hao hụt', money(x.net)], ['Chu kỳ / khai thác', esc(cycleSummary(x))]]) + `<div class="corp-note">${esc(valuationNote(f, x))}</div>`
+    corpRows([['Diện tích có cây', has(x.cover.tree_area_ha) ? `${Number(x.cover.tree_area_ha).toLocaleString('vi-VN', { maximumFractionDigits: 2 })} ha` : val()], ['Năng suất ước tính', has(f.yieldPerHa) ? `${Number(f.yieldPerHa).toLocaleString('vi-VN')} m³/ha` : val()], ['Sản lượng ước tính', has(f.p50Volume) ? `${Number(f.p50Volume).toLocaleString('vi-VN')} m³` : val()], ['Giá gỗ tham chiếu', has(f.woodPrice) ? `${money(f.woodPrice)} / m³` : val()], ['Giá trị cây đứng ước tính', money(f.p50Value)], ['Giá trị hiện tại ước tính', money(x.net)], ['Chu kỳ / khai thác', esc(cycleSummary(x))]]) + `<div class="corp-note">${esc(valuationNote(f, x))}</div>`
   );
 };
 
