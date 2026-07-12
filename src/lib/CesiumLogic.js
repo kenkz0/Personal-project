@@ -1135,7 +1135,6 @@ export function initCesiumMap(containerId, callbacks) {
 
   async function loadKml() {
     try {
-      if (await loadSavedPlots({ timeoutMs: 4500 })) return;
       await loadDefaultKml();
       loadSavedPlots({ timeoutMs: 60000, replaceCurrent: true });
     } catch (error) {

@@ -201,8 +201,18 @@ export default function App() {
       onSearchResults: () => {}
     });
     mapLogic.current = logic;
+    const loadingFallback = window.setTimeout(() => {
+      setStatus(s => s.loading ? {
+        ...s,
+        loading: false,
+        spectralStatus: s.spectralStatus === 'Đang tìm ảnh ít mây...'
+          ? 'Đang tải dữ liệu nền; backend có thể đang khởi động.'
+          : s.spectralStatus
+      } : s);
+    }, 9000);
 
     return () => {
+      window.clearTimeout(loadingFallback);
       logic.destroy();
       mapLogic.current = null;
     };
