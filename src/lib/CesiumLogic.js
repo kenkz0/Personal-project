@@ -3,9 +3,12 @@ export function initCesiumMap(containerId, callbacks) {
     ? ""
     : "https://personal-project-w5dk.onrender.com";
   const COVER_API_BASE = (import.meta.env.VITE_COVER_API_URL || DEFAULT_COVER_API_BASE).replace(/\/+$/, "");
+  const DEFAULT_DEMO_USER_KEY = import.meta.env.PROD ? "lam-kinh-demo-customer" : "";
+  const DEMO_USER_KEY = (import.meta.env.VITE_DEMO_USER_KEY || DEFAULT_DEMO_USER_KEY).trim();
   const coverApiUrl = (path) => `${COVER_API_BASE}${path}`;
   const USER_KEY_STORAGE = "lam-kinh-user-key";
   function getUserKey() {
+    if (DEMO_USER_KEY) return DEMO_USER_KEY;
     let key = localStorage.getItem(USER_KEY_STORAGE);
     if (!key) {
       key = `demo-${crypto.randomUUID?.() || Date.now()}`;
@@ -634,15 +637,16 @@ export function initCesiumMap(containerId, callbacks) {
     const [plot] = plots.splice(index, 1);
     removeEntitiesForPlot(boundarySource, plot.id);
     removeEntitiesForPlot(forestSource, plot.id);
+    const deletedSelectedPlot = selectedPlot?.id === plot.id;
+    if (deletedSelectedPlot) {
+      selectedPlot = plots[0] || null;
+      activeSpectralPlot = selectedPlot;
+    }
     refreshDataRectangle();
     updatePlotSummary();
     rebuildForest();
     renderSearchResults();
-    if (selectedPlot?.id === plot.id) {
-      selectedPlot = plots[0] || null;
-      if (selectedPlot) updateCard(selectedPlot);
-      else callbacks.onCardOpen(false);
-    }
+    if (!selectedPlot) callbacks.onCardOpen(false);
     if (plot.persisted && /^[0-9a-f-]{36}$/i.test(plot.id)) {
       try {
         await appApi(`/api/plots/${plot.id}`, { method: "DELETE" });
@@ -785,20 +789,6 @@ export function initCesiumMap(containerId, callbacks) {
       }
     }
     throw lastError || new Error("Yêu cầu mạng thất bại");
-  }
-
-  function showLocalSentinelFallback() {
-    if (spectralLayer) spectralLayer.show = false;
-    spectralLayer = viewer.imageryLayers.addImageryProvider(new Cesium.SingleTileImageryProvider({
-      url: "/img/2026-05-21-_True_color.jpg",
-      rectangle: dataRectangle
-    }));
-    spectralLayer.alpha = 0.78;
-    viewer.imageryLayers.raiseToTop(spectralLayer);
-    callbacks.onSatelliteDisabledChange(false);
-    callbacks.onSatelliteCheckedChange(true);
-    callbacks.onSpectralModeDisabledChange(true);
-    scene.requestRender();
   }
 
   function clearIndexOverlay() {
@@ -1031,51 +1021,6 @@ export function initCesiumMap(containerId, callbacks) {
     return plot.analysis;
   }
 
-  async function loadLatestSentinel(bounds) {
-    let sentinelItem;
-    try {
-      const end = new Date();
-      const start = new Date(end);
-      start.setMonth(start.getMonth() - 18);
-      const params = new URLSearchParams({
-        collections: "sentinel-2-l2a",
-        bbox: [bounds.west, bounds.south, bounds.east, bounds.north].join(","),
-        datetime: `${start.toISOString()}/${end.toISOString()}`,
-        limit: "200"
-      });
-      const response = await fetchWithRetry(`https://planetarycomputer.microsoft.com/api/stac/v1/search?${params}`);
-      if (!response.ok) throw new Error(`STAC HTTP ${response.status}`);
-      const result = await response.json();
-      sentinelItem = chooseBestSentinelItem(result.features);
-      if (!sentinelItem) throw new Error(`Không tìm thấy scene Sentinel-2 trong 18 tháng gần đây`);
-      const cloud = Number(sentinelItem.properties["eo:cloud_cover"]).toFixed(1);
-      callbacks.onSpectralStatusChange(`${formatSceneDate(sentinelItem.properties.datetime)} · mây ${cloud}% · không realtime`);
-      callbacks.onSatelliteDisabledChange(false);
-      callbacks.onSatelliteCheckedChange(true);
-      callbacks.onSpectralModeDisabledChange(false);
-      plots.forEach((plot) => { plot.analysisItem = sentinelItem; });
-      await renderSpectralLayer(currentSpectralMode, selectedPlot || plots[0]);
-      markMapUpdated();
-    } catch (error) {
-      callbacks.onSpectralStatusChange("API tạm thời không khả dụng · ảnh cục bộ 21/05/2026");
-      showLocalSentinelFallback();
-      plots.forEach((plot) => {
-        plot.analysis = { error: `Không tính chỉ số mới: ${error.message}. Đang hiển thị ảnh True Color cục bộ; ảnh này không được dùng để suy ra chỉ số.` };
-      });
-      if (selectedPlot) updateAnalysisPanel(selectedPlot);
-      return;
-    }
-
-    if (selectedPlot) {
-      try {
-        await analyzePlotIndices(selectedPlot, sentinelItem);
-      } catch (error) {
-        selectedPlot.analysis = { error: `Không thể tính chỉ số: ${error.message}` };
-        updateAnalysisPanel(selectedPlot);
-      }
-    }
-  }
-
   function renderSearchResults(query = "") {
     const normalized = query.trim().toLocaleLowerCase("vi");
     const matches = plots.filter((plot) => `${plot.name} ${plot.sourceName}`.toLocaleLowerCase("vi").includes(normalized));
@@ -1135,6 +1080,8 @@ export function initCesiumMap(containerId, callbacks) {
 
   async function loadKml() {
     try {
+      callbacks.onSpectralStatusChange("Đang tải danh mục lô từ PostgreSQL...");
+      if (await loadSavedPlots({ timeoutMs: 3500 })) return;
       await loadDefaultKml();
       loadSavedPlots({ timeoutMs: 60000, replaceCurrent: true });
     } catch (error) {

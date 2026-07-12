@@ -37,6 +37,15 @@ VITE_COVER_API_URL=https://your-cover-api.example.com
 
 Neu chua set `VITE_COVER_API_URL`, frontend se goi `/api/cover` nhu local.
 
+Production mac dinh dung chung demo key `lam-kinh-demo-customer` de laptop/dien thoai
+cung thay mot danh sach lo. Co the override bang bien frontend:
+
+```text
+VITE_DEMO_USER_KEY=lam-kinh-demo-customer
+```
+
+Khi chay local va khong set bien nay, moi trinh duyet se tu tao mot demo key trong `localStorage`.
+
 ## Deploy backend
 
 Backend nam trong `backend/`.
