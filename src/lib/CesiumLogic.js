@@ -448,6 +448,17 @@ export function initCesiumMap(containerId, callbacks) {
     };
   }
 
+  function isClosingDrawClick(screenPosition) {
+    if (drawPoints.length < 3 || !screenPosition) return false;
+    const firstPoint = drawPoints[0];
+    const firstCartesian = Cesium.Cartesian3.fromDegrees(firstPoint.lon, firstPoint.lat, 5);
+    const firstScreen = Cesium.SceneTransforms.wgs84ToWindowCoordinates(scene, firstCartesian);
+    if (!firstScreen) return false;
+    const dx = firstScreen.x - screenPosition.x;
+    const dy = firstScreen.y - screenPosition.y;
+    return Math.hypot(dx, dy) <= 18;
+  }
+
   function refreshDrawPreview() {
     drawSource.entities.removeAll();
     const preview = hoverPoint ? [...drawPoints, hoverPoint] : [...drawPoints];
@@ -1125,6 +1136,10 @@ export function initCesiumMap(containerId, callbacks) {
   const clickHandler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
   clickHandler.setInputAction((movement) => {
     if (isDrawing) {
+      if (isClosingDrawClick(movement.position)) {
+        finishDrawing();
+        return;
+      }
       const point = screenToLonLat(movement.position);
       if (point) {
         drawPoints.push(point);
